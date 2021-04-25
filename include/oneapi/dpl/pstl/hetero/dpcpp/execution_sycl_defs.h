@@ -19,6 +19,7 @@
 #include <CL/sycl.hpp>
 #include "../../onedpl_config.h"
 #include "../../execution_defs.h"
+#include "../../iterator_defs.h"
 #if _ONEDPL_FPGA_DEVICE
 #    include <CL/sycl/INTEL/fpga_extensions.hpp>
 #endif
@@ -59,24 +60,6 @@ class device_policy
     queue() const
     {
         return q;
-    }
-
-    // For internal use only
-    static constexpr ::std::true_type
-    __allow_unsequenced()
-    {
-        return ::std::true_type{};
-    }
-    // __allow_vector is needed for __is_vectorization_preferred
-    static constexpr ::std::true_type
-    __allow_vector()
-    {
-        return ::std::true_type{};
-    }
-    static constexpr ::std::true_type
-    __allow_parallel()
-    {
-        return ::std::true_type{};
     }
 
   private:
@@ -230,43 +213,7 @@ struct is_execution_policy<__dpl::fpga_policy<unroll_factor, PolicyParams...>> :
 namespace __internal
 {
 
-// Extension: hetero execution policy type trait
-template <typename _T>
-struct __is_hetero_execution_policy : ::std::false_type
-{
-};
-
-template <typename... PolicyParams>
-struct __is_hetero_execution_policy<execution::device_policy<PolicyParams...>> : ::std::true_type
-{
-};
-
-template <typename _T>
-struct __is_device_execution_policy : ::std::false_type
-{
-};
-
-template <typename... PolicyParams>
-struct __is_device_execution_policy<execution::device_policy<PolicyParams...>> : ::std::true_type
-{
-};
-
-template <typename _T>
-struct __is_fpga_execution_policy : ::std::false_type
-{
-};
-
 #if _ONEDPL_FPGA_DEVICE
-template <unsigned int unroll_factor, typename... PolicyParams>
-struct __is_hetero_execution_policy<execution::fpga_policy<unroll_factor, PolicyParams...>> : ::std::true_type
-{
-};
-
-template <unsigned int unroll_factor, typename... PolicyParams>
-struct __is_fpga_execution_policy<execution::fpga_policy<unroll_factor, PolicyParams...>> : ::std::true_type
-{
-};
-
 template <typename _T, unsigned int unroll_factor, typename... PolicyParams>
 struct __ref_or_copy_impl<execution::fpga_policy<unroll_factor, PolicyParams...>, _T>
 {
@@ -297,20 +244,37 @@ template <typename _T, typename... _Events>
 using __enable_if_convertible_to_events =
     typename ::std::enable_if<oneapi::dpl::__internal::__is_convertible_to_event<_Events...>::value, _T>::type;
 
-// Extension: execution policies type traits
-template <typename _ExecPolicy, typename _T, typename... _Events>
-using __enable_if_device_execution_policy = typename ::std::enable_if<
-    oneapi::dpl::__internal::__is_device_execution_policy<typename ::std::decay<_ExecPolicy>::type>::value &&
-        oneapi::dpl::__internal::__is_convertible_to_event<_Events...>::value,
-    _T>::type;
 
-template <typename _ExecPolicy, typename _T>
-using __enable_if_hetero_execution_policy = typename ::std::enable_if<
-    oneapi::dpl::__internal::__is_hetero_execution_policy<typename ::std::decay<_ExecPolicy>::type>::value, _T>::type;
+template <typename _BackendTag>
+struct __hetero_tag
+{
+    // __backend_tag to do not duplicate the algorithm_impl level
+    using __backend_tag = _BackendTag;
+};
 
-template <typename _ExecPolicy, typename _T>
-using __enable_if_fpga_execution_policy = typename ::std::enable_if<
-    oneapi::dpl::__internal::__is_fpga_execution_policy<typename ::std::decay<_ExecPolicy>::type>::value, _T>::type;
+struct __device_backend
+{
+};
+
+template <class... _IteratorTypes, typename _KernelName>
+typename ::std::enable_if<__is_random_access_iterator<_IteratorTypes...>::value, __hetero_tag<__device_backend>>::type
+__select_backend(const execution::device_policy<_KernelName>&, _IteratorTypes&&...)
+{
+    return {};
+}
+
+#if _ONEDPL_FPGA_DEVICE
+struct __fpga_backend : __device_backend
+{
+};
+
+template <class... _IteratorTypes, unsigned int _Factor, typename _KernelName>
+typename ::std::enable_if<__is_random_access_iterator<_IteratorTypes...>::value, __hetero_tag<__fpga_backend>>::type
+__select_backend(const execution::fpga_policy<_Factor, _KernelName>&, _IteratorTypes&&...)
+{
+    return {};
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Device run-time information helpers

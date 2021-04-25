@@ -134,41 +134,51 @@ __brick_walk1(_DifferenceType __n, _Function __f, ::std::true_type) noexcept
     oneapi::dpl::__internal::__brick_walk1(__n, __f, ::std::false_type{});
 }
 
-template <class _ExecutionPolicy, class _ForwardIterator, class _Function, class _IsVector>
-oneapi::dpl::__internal::__enable_if_host_execution_policy<_ExecutionPolicy, void>
-__pattern_walk1(_ExecutionPolicy&&, _ForwardIterator __first, _ForwardIterator __last, _Function __f,
-                _IsVector __is_vector,
-                /*parallel=*/::std::false_type) noexcept
+template <class _Tag, class _ExecutionPolicy, class _ForwardIterator, class _Function>
+void
+__pattern_walk1(_Tag, _ExecutionPolicy&&, _ForwardIterator __first,
+                _ForwardIterator __last, _Function __f) noexcept
 {
-    __internal::__brick_walk1(__first, __last, __f, __is_vector);
+    __internal::__brick_walk1(__first, __last, __f, typename _Tag::__is_vector{});
 }
 
-template <class _ExecutionPolicy, class _ForwardIterator, class _Function, class _IsVector>
-oneapi::dpl::__internal::__enable_if_host_execution_policy_conditional<
-    _ExecutionPolicy, __is_random_access_iterator<_ForwardIterator>::value, void>
-__pattern_walk1(_ExecutionPolicy&& __exec, _ForwardIterator __first, _ForwardIterator __last, _Function __f,
-                _IsVector __is_vector,
-                /*parallel=*/::std::true_type)
+template <class _ExecutionPolicy, class _ForwardIterator, class _Function>
+void
+__pattern_walk1(__parallel_forward_tag, _ExecutionPolicy&& __exec,
+                _ForwardIterator __first, _ForwardIterator __last, _Function __f)
 {
+
+    typedef typename ::std::iterator_traits<_ForwardIterator>::reference _ReferenceType;
+    auto __func = [&__f](_ReferenceType arg) { __f(arg); };
     __internal::__except_handler([&]() {
-        __par_backend::__parallel_for(::std::forward<_ExecutionPolicy>(__exec), __first, __last,
-                                      [__f, __is_vector](_ForwardIterator __i, _ForwardIterator __j) {
-                                          __internal::__brick_walk1(__i, __j, __f, __is_vector);
+        __par_backend::__parallel_for_each(__parallel_forward_tag::__backend_tag{}, ::std::forward<_ExecutionPolicy>(__exec), __first, __last, __func);
+    });
+}
+
+template <class _IsVector, class _ExecutionPolicy, class _ForwardIterator, class _Function>
+void
+__pattern_walk1(__parallel_tag<_IsVector> __tag, _ExecutionPolicy&& __exec,
+                _ForwardIterator __first, _ForwardIterator __last, _Function __f)
+{
+    using __backend_tag = typename decltype(__tag)::__backend_tag;
+    __internal::__except_handler([&]() {
+        __par_backend::__parallel_for(__backend_tag{}, ::std::forward<_ExecutionPolicy>(__exec), __first, __last,
+                                      [__f](_ForwardIterator __i, _ForwardIterator __j) {
+                                          __internal::__brick_walk1(__i, __j, __f, _IsVector{});
                                       });
     });
 }
 
-template <class _ExecutionPolicy, class _ForwardIterator, class _Function, class _IsVector>
-oneapi::dpl::__internal::__enable_if_host_execution_policy_conditional<
-    _ExecutionPolicy, !__is_random_access_iterator<_ForwardIterator>::value, void>
-__pattern_walk1(_ExecutionPolicy&& __exec, _ForwardIterator __first, _ForwardIterator __last, _Function __f, _IsVector,
-                /*parallel=*/::std::true_type)
+template <class _Tag, class _ExecutionPolicy, class _ForwardIterator, class _UnaryPredicate, class _Tp>
+oneapi::dpl::__internal::__enable_if_execution_policy<_ExecutionPolicy, void>
+__pattern_replace_if(_Tag __tag, _ExecutionPolicy&& __exec, _ForwardIterator __first, _ForwardIterator __last,
+                     _UnaryPredicate __pred, const _Tp& __new_value)
 {
-    typedef typename ::std::iterator_traits<_ForwardIterator>::reference _ReferenceType;
-    auto __func = [&__f](_ReferenceType arg) { __f(arg); };
-    __internal::__except_handler([&]() {
-        __par_backend::__parallel_for_each(::std::forward<_ExecutionPolicy>(__exec), __first, __last, __func);
-    });
+    oneapi::dpl::__internal::__pattern_walk1(
+        __tag, ::std::forward<_ExecutionPolicy>(__exec), __first, __last,
+        oneapi::dpl::__internal::__replace_functor<
+            oneapi::dpl::__internal::__ref_or_copy<_ExecutionPolicy, const _Tp>,
+            oneapi::dpl::__internal::__ref_or_copy<_ExecutionPolicy, _UnaryPredicate>>(__new_value, __pred));
 }
 
 template <class _ExecutionPolicy, class _ForwardIterator, class _Brick>
@@ -680,25 +690,25 @@ __brick_find_if(_RandomAccessIterator __first, _RandomAccessIterator __last, _Pr
         [&__pred](_RandomAccessIterator __it, _SizeType __i) { return __pred(__it[__i]); });
 }
 
-template <class _ExecutionPolicy, class _ForwardIterator, class _Predicate, class _IsVector>
-oneapi::dpl::__internal::__enable_if_host_execution_policy<_ExecutionPolicy, _ForwardIterator>
-__pattern_find_if(_ExecutionPolicy&&, _ForwardIterator __first, _ForwardIterator __last, _Predicate __pred,
-                  _IsVector __is_vector,
-                  /*is_parallel=*/::std::false_type) noexcept
+template <class _Tag, class _ExecutionPolicy, class _ForwardIterator, class _Predicate>
+_ForwardIterator
+__pattern_find_if(_Tag __tag, _ExecutionPolicy&&, _ForwardIterator __first, _ForwardIterator __last,
+                  _Predicate __pred) noexcept
 {
-    return __internal::__brick_find_if(__first, __last, __pred, __is_vector);
+    return __internal::__brick_find_if(__first, __last, __pred, typename _Tag::__is_vector{});
 }
 
-template <class _ExecutionPolicy, class _ForwardIterator, class _Predicate, class _IsVector>
-oneapi::dpl::__internal::__enable_if_host_execution_policy<_ExecutionPolicy, _ForwardIterator>
-__pattern_find_if(_ExecutionPolicy&& __exec, _ForwardIterator __first, _ForwardIterator __last, _Predicate __pred,
-                  _IsVector __is_vector,
-                  /*is_parallel=*/::std::true_type)
+
+template <class _IsVector, class _ExecutionPolicy, class _ForwardIterator, class _Predicate>
+_ForwardIterator
+__pattern_find_if(__parallel_tag<_IsVector> __tag, _ExecutionPolicy&& __exec,
+                  _ForwardIterator __first, _ForwardIterator __last, _Predicate __pred)
 {
+    using __backend_tag = typename decltype(__tag)::__backend_tag;
     return __except_handler([&]() {
-        return __parallel_find(::std::forward<_ExecutionPolicy>(__exec), __first, __last,
-                               [__pred, __is_vector](_ForwardIterator __i, _ForwardIterator __j) {
-                                   return __brick_find_if(__i, __j, __pred, __is_vector);
+        return __parallel_find(__backend_tag{}, ::std::forward<_ExecutionPolicy>(__exec), __first, __last,
+                               [__pred](_ForwardIterator __i, _ForwardIterator __j) {
+                                   return __brick_find_if(__i, __j, __pred, _IsVector{});
                                },
                                ::std::true_type{});
     });

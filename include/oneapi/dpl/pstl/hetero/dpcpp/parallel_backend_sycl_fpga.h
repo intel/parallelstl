@@ -43,10 +43,9 @@ namespace __par_backend_hetero
 //------------------------------------------------------------------------
 //General version of parallel_for, one additional parameter - __count of iterations of loop __cgh.parallel_for,
 //for some algorithms happens that size of processing range is n, but amount of iterations is n/2.
-
 template <typename _ExecutionPolicy, typename _Fp, typename _Index, typename... _Ranges>
-oneapi::dpl::__internal::__enable_if_fpga_execution_policy<_ExecutionPolicy, __future<void>>
-__parallel_for(_ExecutionPolicy&& __exec, _Fp __brick, _Index __count, _Ranges&&... __rngs)
+__future<void>
+__parallel_for(oneapi::dpl::__internal::__fpga_backend, _ExecutionPolicy&& __exec, _Fp __brick, _Index __count, _Ranges&&... __rngs)
 {
     auto __n = oneapi::dpl::__ranges::__get_first_range_size(__rngs...);
     assert(__n > 0);
@@ -174,14 +173,14 @@ __parallel_find(_ExecutionPolicy&& __exec, _Iterator1 __first, _Iterator1 __last
 }
 
 template <typename _ExecutionPolicy, typename _Iterator, typename _Brick, typename _IsFirst>
-oneapi::dpl::__internal::__enable_if_fpga_execution_policy<_ExecutionPolicy, _Iterator>
-__parallel_find(_ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last, _Brick __f, _IsFirst __is_first)
+_Iterator
+__parallel_find(oneapi::dpl::__internal::__fpga_backend __tag, _ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last, _Brick __f, _IsFirst __is_first)
 {
     // workaround until we implement more performant version for patterns
     using _Policy = typename ::std::decay<_ExecutionPolicy>::type;
     using __kernel_name = typename _Policy::kernel_name;
     auto __device_policy = oneapi::dpl::execution::make_device_policy<__kernel_name>(__exec.queue());
-    return oneapi::dpl::__par_backend_hetero::__parallel_find(__device_policy, __first, __last, __f, __is_first);
+    return oneapi::dpl::__par_backend_hetero::__parallel_find(oneapi::dpl::__internal::__device_backend{}, __device_policy, __first, __last, __f, __is_first);
 }
 
 template <typename _ExecutionPolicy>

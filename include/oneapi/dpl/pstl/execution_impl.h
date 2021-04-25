@@ -29,34 +29,6 @@ namespace dpl
 namespace __internal
 {
 
-/* predicate */
-
-template <typename _Tp>
-::std::false_type __lazy_and(_Tp, ::std::false_type)
-{
-    return ::std::false_type{};
-}
-
-template <typename _Tp>
-inline _Tp
-__lazy_and(_Tp __a, ::std::true_type)
-{
-    return __a;
-}
-
-template <typename _Tp>
-::std::true_type __lazy_or(_Tp, ::std::true_type)
-{
-    return ::std::true_type{};
-}
-
-template <typename _Tp>
-inline _Tp
-__lazy_or(_Tp __a, ::std::false_type)
-{
-    return __a;
-}
-
 /* policy */
 template <typename Policy>
 struct __policy_traits
@@ -96,10 +68,6 @@ struct __policy_traits<oneapi::dpl::execution::parallel_unsequenced_policy>
 };
 
 template <typename _ExecutionPolicy>
-using __collector_t =
-    typename __internal::__policy_traits<typename ::std::decay<_ExecutionPolicy>::type>::__collector_type;
-
-template <typename _ExecutionPolicy>
 using __allow_vector =
     typename __internal::__policy_traits<typename ::std::decay<_ExecutionPolicy>::type>::__allow_vector;
 
@@ -111,41 +79,72 @@ template <typename _ExecutionPolicy>
 using __allow_parallel =
     typename __internal::__policy_traits<typename ::std::decay<_ExecutionPolicy>::type>::__allow_parallel;
 
-template <typename _ExecutionPolicy, typename... _IteratorTypes>
-auto
-__is_vectorization_preferred(_ExecutionPolicy& __exec)
-    -> decltype(__internal::__lazy_and(__exec.__allow_vector(),
-                                       typename __internal::__is_random_access_iterator<_IteratorTypes...>::type()))
-{
-    return __internal::__lazy_and(__exec.__allow_vector(),
-                                  typename __internal::__is_random_access_iterator<_IteratorTypes...>::type());
-}
+//------------------------------------------------------------------------
+// backend selector with tags
+//------------------------------------------------------------------------
 
-template <typename _ExecutionPolicy, typename... _IteratorTypes>
-auto
-__is_parallelization_preferred(_ExecutionPolicy& __exec)
-    -> decltype(__internal::__lazy_and(__exec.__allow_parallel(),
-                                       typename __internal::__is_random_access_iterator<_IteratorTypes...>::type()))
-{
-    return __internal::__lazy_and(__exec.__allow_parallel(),
-                                  typename __internal::__is_random_access_iterator<_IteratorTypes...>::type());
-}
+struct __tbb_backend {};
 
-template <typename policy, typename... _IteratorTypes>
-struct __prefer_unsequenced_tag
+template <class _IsVector>
+struct __serial_tag
 {
-    static constexpr bool value = __internal::__allow_unsequenced<policy>::value &&
-                                  __internal::__is_random_access_iterator<_IteratorTypes...>::value;
-    typedef ::std::integral_constant<bool, value> type;
+    using __is_vector = _IsVector;
 };
 
-template <typename policy, typename... _IteratorTypes>
-struct __prefer_parallel_tag
+template <class _IsVector>
+struct __parallel_tag
 {
-    static constexpr bool value = __internal::__allow_parallel<policy>::value &&
-                                  __internal::__is_random_access_iterator<_IteratorTypes...>::value;
-    typedef ::std::integral_constant<bool, value> type;
+    using __is_vector = _IsVector;
+    // backend tag can be change depending on
+    // TBB availability in the environment
+    using __backend_tag = __tbb_backend;
 };
+
+struct __parallel_forward_tag
+{
+    using __is_vector = ::std::false_type;
+    // backend tag can be change depending on
+    // TBB availability in the environment
+    using __backend_tag = __tbb_backend;
+};
+
+template <class _IsVector, class... _IteratorTypes>
+using __tag_type =
+    typename ::std::conditional<__internal::__is_random_access_iterator<_IteratorTypes...>::value,
+                                __parallel_tag<_IsVector>,
+                                typename ::std::conditional<__is_forward_iterator<_IteratorTypes...>::value,
+                                                            __parallel_forward_tag,
+                                                            __serial_tag<_IsVector>
+                                                            >::type
+                                >::type;
+
+template <class... _IteratorTypes>
+__serial_tag<std::false_type>
+__select_backend(oneapi::dpl::execution::sequenced_policy, _IteratorTypes&&...)
+{
+    return {};
+}
+
+template <class... _IteratorTypes>
+__serial_tag<__internal::__is_random_access_iterator<_IteratorTypes...>>
+__select_backend(oneapi::dpl::execution::unsequenced_policy, _IteratorTypes&&...)
+{
+    return {};
+}
+
+template <class... _IteratorTypes>
+__tag_type<std::false_type, _IteratorTypes...>
+__select_backend(oneapi::dpl::execution::parallel_policy, _IteratorTypes&&...)
+{
+    return {};
+}
+
+template <class... _IteratorTypes>
+__tag_type<__internal::__is_random_access_iterator<_IteratorTypes...>, _IteratorTypes...>
+__select_backend(oneapi::dpl::execution::parallel_unsequenced_policy, _IteratorTypes&&...)
+{
+    return {};
+}
 
 } // namespace __internal
 } // namespace dpl

@@ -239,8 +239,8 @@ class __parallel_sort_copy_back_kernel : public __kernel_name_base<__parallel_so
 //General version of parallel_for, one additional parameter - __count of iterations of loop __cgh.parallel_for,
 //for some algorithms happens that size of processing range is n, but amount of iterations is n/2.
 template <typename _ExecutionPolicy, typename _Fp, typename _Index, typename... _Ranges>
-oneapi::dpl::__internal::__enable_if_device_execution_policy<_ExecutionPolicy, __future<void>>
-__parallel_for(_ExecutionPolicy&& __exec, _Fp __brick, _Index __count, _Ranges&&... __rngs)
+__future<void>
+__parallel_for(oneapi::dpl::__internal::__device_backend, _ExecutionPolicy&& __exec, _Fp __brick, _Index __count, _Ranges&&... __rngs)
 {
     assert(oneapi::dpl::__ranges::__get_first_range_size(__rngs...) > 0);
 
@@ -258,6 +258,7 @@ __parallel_for(_ExecutionPolicy&& __exec, _Fp __brick, _Index __count, _Ranges&&
             __brick(__idx, __rngs...);
         });
     });
+
     return __future<void>(__event);
 }
 
@@ -777,8 +778,8 @@ __parallel_find(_ExecutionPolicy&& __exec, _Iterator1 __first, _Iterator1 __last
 // TODO: check if similar pattern may apply to other algorithms. If so, these overloads should be moved out of
 // backend code.
 template <typename _ExecutionPolicy, typename _Iterator, typename _Brick, typename _IsFirst>
-oneapi::dpl::__internal::__enable_if_device_execution_policy<_ExecutionPolicy, _Iterator>
-__parallel_find(_ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last, _Brick __f, _IsFirst)
+_Iterator
+__parallel_find(oneapi::dpl::__internal::__device_backend, _ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last, _Brick __f, _IsFirst)
 {
     auto __keep = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read, _Iterator>();
     auto __buf = __keep(__first, __last);
