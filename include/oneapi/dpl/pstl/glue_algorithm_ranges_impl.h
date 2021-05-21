@@ -19,6 +19,8 @@
 #include "execution_defs.h"
 #include "glue_algorithm_defs.h"
 
+#include "algorithm_ranges_impl.h"
+
 #if _ONEDPL_HETERO_BACKEND
 #    include "hetero/algorithm_ranges_impl_hetero.h"
 #    include "hetero/algorithm_impl_hetero.h" //TODO: for __brick_copy
@@ -455,6 +457,18 @@ minmax_element(_ExecutionPolicy&& __exec, _Range&& __rng)
 {
     return minmax_element(::std::forward<_ExecutionPolicy>(__exec), ::std::forward<_Range>(__rng),
                           oneapi::dpl::__internal::__pstl_less());
+}
+
+template <typename _ExecutionPolicy, typename _Range1, typename _Range2, typename _Range3, typename _Range4>
+oneapi::dpl::__internal::__enable_if_execution_policy<_ExecutionPolicy,
+                                                      oneapi::dpl::__internal::__difference_t<_Range3>>
+reduce_by_key(_ExecutionPolicy&& __exec, _Range1&& __keys, _Range2&& __values, _Range3&& __out_keys,
+              _Range4&& __out_values)
+{
+    return oneapi::dpl::__internal::__ranges::__pattern_reduce_by_key(
+        ::std::forward<_ExecutionPolicy>(__exec), views::all_read(::std::forward<_Range1>(__keys)),
+        views::all_read(::std::forward<_Range2>(__values)), views::all_write(::std::forward<_Range3>(__out_keys)),
+        views::all_write(::std::forward<_Range4>(__out_values)));
 }
 
 } // namespace ranges
