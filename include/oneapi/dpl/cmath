@@ -15,7 +15,7 @@
 #ifndef __ONEDPL_cmath
 #define __ONEDPL_cmath
 #include "oneapi/dpl/internal/common_config.h"
-#include <cmath>
+#include_next <cmath>
 
 namespace oneapi
 {

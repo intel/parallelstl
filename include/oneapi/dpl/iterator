@@ -17,7 +17,7 @@
 #define _ONEDPL_ITERATOR
 
 #include "oneapi/dpl/internal/common_config.h"
-#include <iterator>
+#include_next <iterator>
 #include "oneapi/dpl/pstl/onedpl_config.h"
 #if _ONEDPL_BACKEND_SYCL
 #    include "oneapi/dpl/pstl/hetero/dpcpp/sycl_iterator.h"

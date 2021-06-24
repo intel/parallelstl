@@ -15,7 +15,7 @@
 #ifndef __ONEDPL_optional
 #define __ONEDPL_optional
 #include "oneapi/dpl/internal/common_config.h"
-#include <optional>
+#include_next <optional>
 
 namespace oneapi
 {

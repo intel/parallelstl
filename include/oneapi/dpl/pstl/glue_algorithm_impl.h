@@ -75,6 +75,7 @@ template <class _ExecutionPolicy, class _ForwardIterator, class _Function>
 oneapi::dpl::__internal::__enable_if_execution_policy<_ExecutionPolicy, void>
 for_each(_ExecutionPolicy&& __exec, _ForwardIterator __first, _ForwardIterator __last, _Function __f)
 {
+    std::cout << "nash" << std::endl;
     oneapi::dpl::__internal::__pattern_walk1(
         ::std::forward<_ExecutionPolicy>(__exec), __first, __last, __f,
         oneapi::dpl::__internal::__is_vectorization_preferred<_ExecutionPolicy, _ForwardIterator>(__exec),

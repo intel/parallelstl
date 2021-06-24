@@ -15,8 +15,9 @@
 
 #include "support/test_config.h"
 
-#include _PSTL_TEST_HEADER(execution)
-#include _PSTL_TEST_HEADER(algorithm)
+#include <iostream>
+#include <execution>
+#include <algorithm>
 
 #include "support/utils.h"
 
@@ -60,8 +61,9 @@ struct test_for_each
 
         // Try for_each
         ::std::for_each(expected_first, expected_last, Flip<T>(1));
-        for_each(exec, first, last, Flip<T>(1));
+        std::for_each(exec, first, last, Flip<T>(1));
         EXPECT_EQ_N(expected_first, first, n, "wrong effect from for_each");
+        std::cout << "Abogn" << std::endl;
     }
 };
 
@@ -75,9 +77,9 @@ struct test_for_each_n
         typedef typename ::std::iterator_traits<Iterator>::value_type T;
 
         // Try for_each_n
-        ::std::for_each_n(oneapi::dpl::execution::seq, expected_first, n, Flip<T>(1));
-        for_each_n(exec, first, n, Flip<T>(1));
-        EXPECT_EQ_N(expected_first, first, n, "wrong effect from for_each_n");
+        // ::std::for_each_n(std::execution::seq, expected_first, n, Flip<T>(1));
+        // for_each_n(exec, first, n, Flip<T>(1));
+        // EXPECT_EQ_N(expected_first, first, n, "wrong effect from for_each_n");
     }
 };
 
@@ -90,11 +92,11 @@ test()
         Sequence<T> inout(n, Gen<T>());
         Sequence<T> expected(n, Gen<T>());
 #ifdef FOR_EACH
-        invoke_on_all_policies<>()(test_for_each<T>(), inout.begin(), inout.end(), expected.begin(), expected.end(),
+        test_for_each<T>()(std::execution::par_unseq, inout.begin(), inout.end(), expected.begin(), expected.end(),
                                    inout.size());
 #endif
 #ifdef FOR_EACH_N
-        invoke_on_all_policies<>()(test_for_each_n<T>(), inout.begin(), inout.end(), expected.begin(), expected.end(),
+        test_for_each_n<T>()(std::execution::par_unseq, inout.begin(), inout.end(), expected.begin(), expected.end(),
                                    inout.size());
 #endif
     }

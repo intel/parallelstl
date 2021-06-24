@@ -15,7 +15,7 @@
 #ifndef __ONEDPL_complex
 #define __ONEDPL_complex
 #include "oneapi/dpl/internal/common_config.h"
-#include <complex>
+#include_next <complex>
 
 namespace oneapi
 {
