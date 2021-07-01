@@ -240,6 +240,40 @@ __pattern_walk2_brick_n(_ExecutionPolicy&& __exec, _ForwardIterator1 __first1, _
 }
 
 //------------------------------------------------------------------------
+// transform_if
+//------------------------------------------------------------------------
+
+template <typename _ExecutionPolicy, typename _ForwardIterator1, typename _ForwardIterator2, typename _ForwardIterator3,
+          typename _UnaryOperation, typename _Predicate>
+oneapi::dpl::__internal::__enable_if_hetero_execution_policy<_ExecutionPolicy, _ForwardIterator3>
+__pattern_transform_if(_ExecutionPolicy&& __exec, _ForwardIterator1 __first1, _ForwardIterator1 __last1,
+                       _ForwardIterator2 __first2, _ForwardIterator3 __first3, _UnaryOperation __op, _Predicate __pred,
+                       /*vector=*/::std::true_type,
+                       /*parallel=*/::std::true_type)
+{
+    auto __n = __last1 - __first1;
+    if (__n <= 0)
+        return __first3;
+
+    auto __keep1 =
+        oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read, _ForwardIterator1>();
+    auto __buf1 = __keep1(__first1, __last1);
+    auto __keep2 =
+        oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read, _ForwardIterator2>();
+    auto __buf2 = __keep2(__first2, __first2 + __n);
+    auto __keep3 =
+        oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::write, _ForwardIterator3>();
+    auto __buf3 = __keep3(__first3, __first3 + __n);
+
+    oneapi::dpl::__par_backend_hetero::__parallel_for(
+        ::std::forward<_ExecutionPolicy>(__exec), unseq_backend::mask_walk_n<_UnaryOperation, _Predicate>{__op, __pred},
+        __n, __buf1.all_view(), __buf2.all_view(), __buf3.all_view())
+        .wait();
+
+    return __first3 + __n;
+}
+
+//------------------------------------------------------------------------
 // fill
 //------------------------------------------------------------------------
 
