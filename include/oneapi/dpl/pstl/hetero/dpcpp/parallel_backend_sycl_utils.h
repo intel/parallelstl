@@ -418,7 +418,8 @@ class __future : public __future_base
     _T
     get()
     {
-        return __data.template get_access<access_mode::read>()[__result_idx];
+        auto __sub_buffer = sycl::buffer{__data, sycl::id<1>(__result_idx), sycl::range<1>(1)};
+        return __sub_buffer.template get_access<access_mode::read>()[0];
     }
     template <class _Tp, class _Enable>
     friend class oneapi::dpl::__internal::__future;
