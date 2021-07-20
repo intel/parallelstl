@@ -17,7 +17,7 @@ header.  All iterators are implemented in the ``oneapi::dpl`` namespace.
     dpl::counting_iterator<int> count_a(0);
     dpl::counting_iterator<int> count_b = count_a + 10;
     int init = count_a[0]; // OK: init == 0
-    *count_b = 7; // ERROR: counting_iterator doesn't provide write operations
+    *count_b = 7; // ERROR: counting_iterator does not provide write operations
     auto sum = std::reduce(dpl::execution::dpcpp_default,
                            count_a, count_b, init); // sum is (0 + 0 + 1 + ... + 9) = 45
 

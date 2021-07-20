@@ -18,14 +18,14 @@ allow you to pass SYCL buffers to parallel algorithms. These functions accept
 a SYCL buffer and return an object of an unspecified type that provides the following
 API:
 
-* it satisfies ``CopyConstructible``, ``CopyAssignable`` C++ named requirements and comparable with ``operator==`` and ``operator!=``
-* the following expressions are valid: ``a + n``, ``a - n``, and ``a - b``, where ``a`` and ``b``
-  are objects of the type, and ``n`` is an integer value. Effect for those operations is the same as for the type
-  that satisfies ``LegacyRandomAccessIterator`` C++ named requirement
-* it provides the ``get_buffer`` method that returns the buffer passed to the ``begin`` and ``end`` functions
+* It satisfies ``CopyConstructible`` and ``CopyAssignable`` C++ named requirements and comparable with ``operator==`` and ``operator!=``.
+* It gives the following valid expressions: ``a + n``, ``a - n``, and ``a - b``, where ``a`` and ``b``
+  are objects of the type, and ``n`` is an integer value. The effect of those operations is the same as for the type
+  that satisfies the ``LegacyRandomAccessIterator``, a C++ named requirement.
+* It provides the ``get_buffer`` method, which returns the buffer passed to the ``begin`` and ``end`` functions.
 
-``begin``, ``end`` can optionally take SYCL 2020 deduction tags and ``sycl::no_init`` as arguments
-to explicitly mention, which access mode should be applied to the buffer accessor when submitting
+``begin`` and ``end`` can optionally take SYCL 2020 deduction tags and ``sycl::no_init`` as arguments
+to explicitly mention which access mode should be applied to the buffer accessor when submitting a
 DPC++ kernel to a device. For example:
 
 .. code:: cpp
@@ -100,7 +100,7 @@ Alternatively, use ``std::vector`` with a USM allocator:
     return 0;
   }
 
-Use Host-Side ``std::vector``
+Use Host-Side std::vector
 -----------------------------
 
 |onedpl_short| parallel algorithms can be called with ordinary (host-side) iterators, as seen in the
