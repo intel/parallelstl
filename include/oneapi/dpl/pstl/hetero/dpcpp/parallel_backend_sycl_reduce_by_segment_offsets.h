@@ -1142,6 +1142,7 @@ class __segmented_reduce_chunk_wrapper;
 template <typename _Name>
 class __segmented_reduce_combine_wrapper;
 
+// Writes the initial value into every result: the input is empty, so every segment is
 template <typename _Acc, typename _BackendTag, typename _ExecutionPolicy, typename _Range, typename _Size,
           typename _InitType>
 void

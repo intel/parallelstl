@@ -44,8 +44,8 @@ Algorithms in <oneapi/dpl/numeric>
   The overload without ``binary_op`` uses ``std::plus<>`` as the operation, as ``std::reduce`` does. The initial
   value is required by both overloads.
 
-  ``SegmentNumT`` must be an integral type, and ``OffsetIt`` must not be one; the offsets must be of an
-  integral type other than ``bool``. ``InputIt``, ``OutputIt`` and ``OffsetIt`` must be random access iterators.
+  ``SegmentNumT`` must be an integral type other than ``bool``. ``InputIt``, ``OutputIt`` and ``OffsetIt`` must
+  be random access iterators, and the value type of ``OffsetIt`` must be an integral type other than ``bool``.
 
   Every segment is clamped to the input ``[first, last)``: a segment crossing a bound of the input is reduced
   partially, and a segment that is empty or lies beyond the input gets the initial value converted to the
@@ -101,6 +101,11 @@ Algorithms in <oneapi/dpl/numeric>
   The first overload takes as input the number of bins, range minimum, and range maximum, then evenly
   divides bins within that range. An input element ``a`` maps to a bin ``i`` such that
   ``i = floor((a - minimum) / ((maximum - minimum) / num_bins)))``.
+
+  When the input elements or the bounds are floating-point, this mapping is computed in floating-point
+  arithmetic, with integer bounds first converted to the input element type. An element on or within
+  rounding error of a bin boundary is subject to floating point inaccuracies and may therefore be counted
+  in the adjacent bin.
 
   The other overload defines ``m`` bins from a sorted sequence of ``m + 1`` user-provided boundaries
   where an input element ``a`` maps to a bin ``i`` if and only if
