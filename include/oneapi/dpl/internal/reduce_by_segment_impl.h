@@ -255,10 +255,176 @@ inline constexpr std::size_t __segmented_reduce_host_cut_off = std::size_t(1) <<
 inline constexpr std::size_t __segmented_reduce_host_short_segment_max = 32768;
 // - the length of a chunk of a long segment.
 inline constexpr std::size_t __segmented_reduce_host_chunk_size = 16384;
+// - the elements of a piece of the input in the one parallel pass of OpenMP.
+inline constexpr std::size_t __segmented_reduce_host_piece = std::size_t(1) << 16;
 // A chunk after the first one of a segment starts from the operation on its first two elements, and a long segment
 // has at least one such chunk besides the first one.
 static_assert(__segmented_reduce_host_chunk_size >= 2);
 static_assert(__segmented_reduce_host_short_segment_max >= __segmented_reduce_host_chunk_size);
+
+// One parallel pass over pieces of the input of about __segmented_reduce_host_piece elements, for a backend that
+// forks and joins its threads once per pass (OpenMP)
+template <typename _Acc, typename _Size, typename _BackendTag, typename _IsVector, typename _ExecutionPolicy,
+          typename _RandomAccessInputIt, typename _RandomAccessOutputIt, typename _RandomAccessOffsetIt,
+          typename _InitType, typename _BinaryOperation>
+void
+__reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& __exec,
+                                      _RandomAccessInputIt __first_value, const _Size __n,
+                                      _RandomAccessOutputIt __result_value, const _Size __m,
+                                      _RandomAccessOffsetIt __offsets, _InitType& __init, _BinaryOperation& __binary_op)
+{
+    using __backend_tag = _BackendTag;
+
+    auto __begin_of = [__offsets, __n](_Size __segment) {
+        return __internal::__segmented_reduce_clamp_offset(__offsets[__segment], __n);
+    };
+
+    // One parallel pass over pieces of the input of about __segmented_reduce_host_piece elements. A piece writes
+    // every segment that starts and ends in it; the segment continuing from the previous piece (the head) and the one
+    // continuing into the next piece (the tail, with the initial value) leave partial results, combined serially in
+    // the order of the pieces. A segment belongs to the piece holding its start, the empty ones at the end of the
+    // input to the last piece. Unordered offsets give unspecified results but no access out of the bounds.
+    const _Size __num_pieces = std::max<_Size>(1, __n / _Size(__segmented_reduce_host_piece));
+    const _Size __piece = (__n + __num_pieces - 1) / __num_pieces;
+    // The first segment starting at __x or later, __m if none
+    auto __first_from = [&](_Size __x) {
+        _Size __lo = 0, __hi = __m;
+        while (__lo < __hi)
+        {
+            const _Size __mid = __lo + (__hi - __lo) / 2;
+            if (__begin_of(__mid) < __x)
+                __lo = __mid + 1;
+            else
+                __hi = __mid;
+        }
+        return __lo;
+    };
+    struct __part
+    {
+        _Size __segment = -1; // -1: none
+        _Size __first = 0;    // the elements [__first, __last) of a head shorter than two elements
+        _Size __last = 0;
+        bool __has_value = false;
+        bool __ends = false; // a head: the segment ends in the piece
+    };
+    oneapi::dpl::__par_backend::__buffer<__part> __heads_buf(__num_pieces), __tails_buf(__num_pieces);
+    oneapi::dpl::__par_backend::__buffer<_Acc> __head_values_buf(__num_pieces), __tail_values_buf(__num_pieces);
+    __part* __heads = __heads_buf.get();
+    __part* __tails = __tails_buf.get();
+    _Acc* __head_values = __head_values_buf.get();
+    _Acc* __tail_values = __tail_values_buf.get();
+    for (_Size __p = 0; __p < __num_pieces; ++__p)
+    {
+        ::new (__heads + __p) __part{};
+        ::new (__tails + __p) __part{};
+    }
+
+    __internal::__except_handler([&]() {
+        oneapi::dpl::__par_backend::__parallel_for(
+            __backend_tag{}, __exec, _Size{0}, __num_pieces,
+            [&](_Size __p_first, _Size __p_last) {
+                for (_Size __p = __p_first; __p < __p_last; ++__p)
+                {
+                    const _Size __b = std::min(__n, __p * __piece);
+                    const _Size __e = __p + 1 == __num_pieces ? __n : std::min(__n, __b + __piece);
+                    const _Size __s_lo = __first_from(__b);
+                    const _Size __s_hi = __p + 1 == __num_pieces ? __m : __first_from(__e);
+                    // The head: the segment before the first one of the piece, if it continues into the piece
+                    if (__s_lo > 0)
+                    {
+                        const _Size __h_end = __begin_of(__s_lo);
+                        const _Size __h_last = std::min(__h_end, __e);
+                        if (__begin_of(__s_lo - 1) < __b && __h_last > __b)
+                        {
+                            __part& __h = __heads[__p];
+                            __h.__segment = __s_lo - 1;
+                            __h.__ends = __h_end <= __e;
+                            if (__h_last - __b >= 2)
+                            {
+                                ::new (__head_values + __p) _Acc(__segmented_reduce_host<_Acc>(
+                                    __first_value, __b + 2, __h_last,
+                                    __internal::__segmented_reduce_to_acc<_Acc>(
+                                        std::invoke(__binary_op, __first_value[__b], __first_value[__b + 1])),
+                                    __binary_op, _IsVector{}));
+                                __h.__has_value = true;
+                            }
+                            else
+                            {
+                                __h.__first = __b;
+                                __h.__last = __h_last;
+                            }
+                        }
+                    }
+                    for (_Size __s = __s_lo; __s < __s_hi; ++__s)
+                    {
+                        const _Size __s_begin = __begin_of(__s);
+                        const _Size __s_end = __begin_of(__s + 1);
+                        if (__s_end > __e && __s + 1 == __s_hi)
+                        {
+                            // The tail: it continues into the next piece
+                            ::new (__tail_values + __p) _Acc(__segmented_reduce_host<_Acc>(
+                                __first_value, __s_begin, __e, __init, __binary_op, _IsVector{}));
+                            __tails[__p].__segment = __s;
+                            __tails[__p].__has_value = true;
+                            continue;
+                        }
+                        __result_value[__s] = __segmented_reduce_host<_Acc>(
+                            __first_value, __s_begin, std::min(__s_end, __e), __init, __binary_op, _IsVector{});
+                    }
+                }
+            },
+            /*__grainsize=*/1);
+
+        // The partial results in the order of the pieces: a tail opens a segment, the heads of the following pieces
+        // add to it until one ends in its piece
+        _Size __open = -1;
+        oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
+        for (_Size __p = 0; __p < __num_pieces; ++__p)
+        {
+            const __part& __h = __heads[__p];
+            if (__h.__segment >= 0 && __h.__segment == __open)
+            {
+                if (__h.__has_value)
+                    __acc.__v = std::invoke(__binary_op, std::move(__acc.__v), std::move(__head_values[__p]));
+                for (_Size __i = __h.__first; __i < __h.__last; ++__i)
+                    __acc.__v = std::invoke(__binary_op, std::move(__acc.__v), __first_value[__i]);
+                if (__h.__ends)
+                {
+                    __result_value[__open] = std::move(__acc.__v);
+                    __acc.__destroy();
+                    __open = -1;
+                }
+            }
+            if (__tails[__p].__segment >= 0)
+            {
+                if (__open >= 0)
+                {
+                    // Unordered offsets only: a segment left open
+                    __result_value[__open] = std::move(__acc.__v);
+                    __acc.__destroy();
+                }
+                __acc.__setup(std::move(__tail_values[__p]));
+                __open = __tails[__p].__segment;
+            }
+        }
+        if (__open >= 0)
+        {
+            __result_value[__open] = std::move(__acc.__v);
+            __acc.__destroy();
+        }
+
+        if constexpr (!std::is_trivially_destructible_v<_Acc>)
+        {
+            for (_Size __p = 0; __p < __num_pieces; ++__p)
+            {
+                if (__heads[__p].__has_value)
+                    __head_values[__p].~_Acc();
+                if (__tails[__p].__has_value)
+                    __tail_values[__p].~_Acc();
+            }
+        }
+    });
+}
 
 template <typename _IsVector, typename _ExecutionPolicy, typename _RandomAccessInputIt, typename _SegmentNum,
           typename _RandomAccessOffsetIt, typename _RandomAccessOutputIt, typename _InitType, typename _BinaryOperation>
@@ -284,6 +450,15 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
                                                        __offsets, __init, __binary_op, _IsVector{});
 
     const _Size __m = __num_segments;
+    // OpenMP forks and joins its threads once per parallel pass: one pass over pieces of the input in place of up
+    // to three
+    if constexpr (std::is_same_v<__backend_tag, oneapi::dpl::__internal::__omp_backend_tag>)
+    {
+        __reduce_by_segment_offsets_by_pieces<_Acc, _Size>(__backend_tag{}, _IsVector{}, __exec, __first_value, __n,
+                                                           __result_value, __m, __offsets, __init, __binary_op);
+        return __result_value + __m;
+    }
+
     const _Size __threshold = __segmented_reduce_host_short_segment_max;
     const _Size __chunk_size = __segmented_reduce_host_chunk_size;
     auto __bounds = [__offsets, __n](_Size __segment) {
