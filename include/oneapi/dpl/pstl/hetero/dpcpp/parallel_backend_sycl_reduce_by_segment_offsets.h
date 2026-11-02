@@ -16,8 +16,11 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "sycl_defs.h"
 #include "parallel_backend_sycl.h"
@@ -27,6 +30,13 @@
 #include "../../functional_impl.h" // oneapi::dpl::maximum
 #include "../../segmented_reduce_utils.h"
 #include "../../utils.h"
+
+// The flat path in one kernel needs its work-groups to run concurrently, as the cooperative kernels of the kernel
+// templates do
+#if defined(SYCL_EXT_ONEAPI_FORWARD_PROGRESS) && defined(SYCL_EXT_ONEAPI_ROOT_GROUP) &&                                \
+    (!defined(__INTEL_LLVM_COMPILER) || __INTEL_LLVM_COMPILER >= 20250100)
+#    define _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT 1
+#endif
 
 namespace oneapi
 {
@@ -338,6 +348,20 @@ struct __segmented_reduce_flat_tuning
         return __n > __group_combine_input;
     }
 
+    // Up to this many work-groups the two kernels are one, its work-groups waiting for each other between the two
+    // parts: the wait costs more with every work-group, and less than the second kernel for few of them only
+    static constexpr std::size_t __one_kernel_max_groups = 32;
+
+    // The work-items an Xe core runs at once, which bound the work-groups of a launch that run concurrently
+    static constexpr std::size_t __concurrent_items_per_core = 2048;
+
+    static std::size_t
+    __concurrent_groups(const sycl::queue& __q, const std::size_t __work_group_size)
+    {
+        return oneapi::dpl::__internal::__max_compute_units(__q) / __compute_units_per_core *
+               (__concurrent_items_per_core / __work_group_size);
+    }
+
     // The guess of a piece refined by interpolation where there are more segments than pieces, where it misses by many
     // of them; with fewer, it is about right and a step only adds a load
     static int
@@ -429,6 +453,116 @@ template <typename... _Name>
 class __segmented_reduce_flat_group_kernel;
 template <typename... _Name>
 class __segmented_reduce_flat_tail_kernel;
+template <typename... _Name>
+class __segmented_reduce_flat_one_kernel;
+
+#if _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
+// The two words of the wait of the work-groups of the one kernel for each other, the count of the work-groups come and
+// the generation of the wait, kept between the calls, so that they are zeroed once: the last work-group to come zeroes
+// the count. A call takes words no other call in flight holds, of the context and the device of its queue; the words
+// of a call that failed are never taken again, as the count may be left over. The words are never released, as a
+// device allocation must not outlive the runtime.
+class __segmented_reduce_flat_wait_words
+{
+    struct __words
+    {
+        sycl::context __context;
+        sycl::device __device;
+        __device_storage<std::uint32_t> __storage;
+        bool __busy;
+    };
+    struct __all_words
+    {
+        std::mutex __mutex;
+        std::vector<std::unique_ptr<__words>> __all;
+    };
+
+    static __all_words&
+    __get_all()
+    {
+        static __all_words* const __all = new __all_words;
+        return *__all;
+    }
+
+    __words* __taken = nullptr;
+    bool __done = false;
+
+  public:
+    // The zeroing of new words, which the kernel depends on
+    sycl::event __ready;
+
+    explicit __segmented_reduce_flat_wait_words(sycl::queue& __q)
+    {
+        __all_words& __a = __get_all();
+        std::lock_guard<std::mutex> __lock(__a.__mutex);
+        const sycl::context __context = __q.get_context();
+        const sycl::device __device = __q.get_device();
+        for (const auto& __w : __a.__all)
+            if (!__w->__busy && __w->__context == __context && __w->__device == __device)
+                __taken = __w.get();
+        if (!__taken)
+        {
+            __a.__all.push_back(std::unique_ptr<__words>(
+                new __words{__context, __device, __device_storage<std::uint32_t>(__q, 2), false}));
+            __taken = __a.__all.back().get();
+            __device_storage<std::uint32_t>& __st = __taken->__storage;
+            if (__st.__usm_buf)
+                __ready = __q.fill(__st.__usm_buf.get(), std::uint32_t{0}, 2);
+            else
+                __ready = __q.submit([&](sycl::handler& __cgh) {
+                    sycl::accessor __acc(__st.__sycl_buf, __cgh, sycl::write_only, sycl::no_init);
+                    __cgh.fill(__acc, std::uint32_t{0});
+                });
+        }
+        __taken->__busy = true;
+    }
+    __segmented_reduce_flat_wait_words(const __segmented_reduce_flat_wait_words&) = delete;
+    __segmented_reduce_flat_wait_words&
+    operator=(const __segmented_reduce_flat_wait_words&) = delete;
+    ~__segmented_reduce_flat_wait_words()
+    {
+        std::lock_guard<std::mutex> __lock(__get_all().__mutex);
+        if (__done)
+            __taken->__busy = false;
+    }
+
+    __device_storage<std::uint32_t>&
+    __storage()
+    {
+        return __taken->__storage;
+    }
+
+    // The call finished, leaving the count zeroed
+    void
+    __finish()
+    {
+        __done = true;
+    }
+};
+
+// A kernel whose work-groups run concurrently, so that they may wait for each other, in sub-groups of __lanes: the
+// properties are the kernel's, as a launch takes only those without an effect on its compilation
+template <typename _Kernel, std::uint32_t __lanes>
+struct __segmented_reduce_concurrent_kernel
+{
+    _Kernel __kernel;
+
+    auto
+    get(sycl::ext::oneapi::experimental::properties_tag) const
+    {
+        namespace __syclex = sycl::ext::oneapi::experimental;
+        return __syclex::properties{__syclex::work_group_progress<__syclex::forward_progress_guarantee::concurrent,
+                                                                  __syclex::execution_scope::root_group>,
+                                    __syclex::sub_group_size<__lanes>};
+    }
+
+    void
+    operator()(sycl::nd_item<1> __item) const
+    {
+        __kernel(__item);
+    }
+};
+#endif // _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
 
 // The local memory of the first kernel where it combines the pieces of a work-group: the heads and the tails of the
 // pieces, the segments of the tails and the states of the heads, 0 for none, 1 for a segment ending in the piece, 2 for
@@ -453,15 +587,16 @@ struct __segmented_reduce_flat_local<true, _Acc, _Size>
     }
 };
 
-template <typename _Acc, typename _KernelName, typename _GroupKernelName, typename _TailKernelName, typename _InitType,
-          typename _BinaryOperation, typename _Tuning>
+template <typename _Acc, typename _KernelName, typename _GroupKernelName, typename _TailKernelName,
+          typename _OneKernelName, typename _InitType, typename _BinaryOperation, typename _Tuning>
 struct __segmented_reduce_flat_submitter;
 
-template <typename _Acc, typename... _Name, typename... _GroupName, typename... _TailName, typename _InitType,
-          typename _BinaryOperation, typename _Tuning>
+template <typename _Acc, typename... _Name, typename... _GroupName, typename... _TailName, typename... _OneName,
+          typename _InitType, typename _BinaryOperation, typename _Tuning>
 struct __segmented_reduce_flat_submitter<
     _Acc, __internal::__optional_kernel_name<_Name...>, __internal::__optional_kernel_name<_GroupName...>,
-    __internal::__optional_kernel_name<_TailName...>, _InitType, _BinaryOperation, _Tuning>
+    __internal::__optional_kernel_name<_TailName...>, __internal::__optional_kernel_name<_OneName...>, _InitType,
+    _BinaryOperation, _Tuning>
 {
     _InitType __init;
     mutable _BinaryOperation __binary_op;
@@ -508,6 +643,60 @@ struct __segmented_reduce_flat_submitter<
         const std::size_t __partial_slots =
             oneapi::dpl::__internal::__dpl_ceiling_div(2 * __num_units * sizeof(_Acc), sizeof(_Unit));
         __device_storage<_Unit> __units_storage{__q, __segment_slots + __partial_slots};
+
+#if _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
+        // The two kernels as one for a small input, over few work-groups, which run concurrently: the work-groups wait
+        // for each other after storing the parts of their pieces, then every sub-group combines the tail of its piece
+        if (!__in_group && __num_units > 1 && __num_groups <= _Tuning::__one_kernel_max_groups &&
+            __num_groups <= _Tuning::__concurrent_groups(__q, __work_group_size) &&
+            __q.get_backend() == sycl::backend::ext_oneapi_level_zero)
+        {
+            __segmented_reduce_flat_wait_words __wait_words(__q);
+            sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
+                oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
+                auto __units_acc = __get_accessor(sycl::read_write, __units_storage, __cgh, __dpl_sycl::__no_init{});
+                auto __words_acc = __get_accessor(sycl::read_write, __wait_words.__storage(), __cgh);
+
+                __cgh.depends_on(__wait_words.__ready);
+
+                const sycl::nd_range<1> __range(sycl::range<1>(__num_groups * __work_group_size),
+                                                sycl::range<1>(__work_group_size));
+                auto __kernel = [=, *this](sycl::nd_item<1> __item) {
+                    _Size* const __tail_segment_of = reinterpret_cast<_Size*>(__units_acc.__data());
+                    _Acc* const __heads = reinterpret_cast<_Acc*>(__units_acc.__data() + __segment_slots);
+                    _Acc* const __tails = __heads + __num_units;
+
+                    const auto __sg = __item.get_sub_group();
+                    const std::uint32_t __lane = __sg.get_local_linear_id();
+                    const std::uint32_t __sg_id = __sg.get_group_linear_id();
+                    const std::uint32_t __group = __item.get_group(0);
+                    const std::uint32_t __piece = __group * std::uint32_t(__sub_groups) + __sg_id;
+                    const _Size __piece_begin = std::min<_Size>(__n, _Size(std::size_t(__piece) * __piece_size));
+                    const _Size __piece_end = std::min<_Size>(__n, __piece_begin + _Size(__piece_size));
+
+                    __piece_parts<_Size> __parts{__m};
+
+                    if (__piece_begin < __piece_end)
+                        __reduce_piece(__sg, __input, __offsets, __result, __n, __m, __piece_begin, __piece_end,
+                                       __estimate, __interpolation_steps, __parts);
+                    __store_piece_parts(__lane, __piece, __m, __parts, __heads, __tails, __tail_segment_of);
+
+                    __wait_for_all_groups(__item, __words_acc.__data(), std::uint32_t(__num_groups));
+
+                    __combine_tail_with_heads(__sg, __offsets, __result, __n, __m, __piece, __num_units, __unit_size,
+                                              __tail_segment_of, __heads);
+                };
+
+                __cgh.parallel_for<_OneName...>(
+                    __range, __segmented_reduce_concurrent_kernel<decltype(__kernel), __lanes>{__kernel});
+            });
+
+            // Waited here, as the temporary data above is released on return
+            __event.wait_and_throw();
+            __wait_words.__finish();
+            return;
+        }
+#endif // _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
 
         // The first kernel, with the combination of the pieces of a work-group in its local memory or without it: the
         // two are apart, so that the one without has no local memory to set up
@@ -1084,6 +1273,36 @@ struct __segmented_reduce_flat_submitter<
         }
     }
 
+#if _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
+    // The work-groups of the one kernel wait here until all of them have come, their earlier stores visible after it:
+    // the last to come zeroes the count and advances the generation the others wait for
+    static void
+    __wait_for_all_groups(const sycl::nd_item<1> __item, std::uint32_t* const __words, const std::uint32_t __num_groups)
+    {
+        sycl::group_barrier(__item.get_group(), sycl::memory_scope::device);
+        if (__item.get_local_linear_id() == 0)
+        {
+            sycl::atomic_ref<std::uint32_t, sycl::memory_order::acq_rel, sycl::memory_scope::device> __count(
+                __words[0]);
+            sycl::atomic_ref<std::uint32_t, sycl::memory_order::acq_rel, sycl::memory_scope::device> __generation(
+                __words[1]);
+            const std::uint32_t __current = __generation.load();
+            if (__count.fetch_add(1) == __num_groups - 1)
+            {
+                __count.store(0);
+                __generation.fetch_add(1);
+            }
+            else
+            {
+                while (__generation.load() == __current)
+                {
+                }
+            }
+        }
+        sycl::group_barrier(__item.get_group(), sycl::memory_scope::device);
+    }
+#endif // _ONEDPL_SEGMENTED_REDUCE_ONE_KERNEL_PRESENT
+
     // The second kernel for the unit __unit, by its sub-group: the tail of the unit with the heads of the following
     // units its segment covers
     template <typename _SubGroup, typename _OffsetRange, typename _OutRange, typename _Size>
@@ -1221,8 +1440,10 @@ struct __parallel_reduce_by_segment_offsets
         using _FlatKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_kernel<_CustomName>>;
         using _FlatGroupKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_group_kernel<_CustomName>>;
         using _FlatTailKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_tail_kernel<_CustomName>>;
-        using _FlatSubmitter = __segmented_reduce_flat_submitter<_Acc, _FlatKernel, _FlatGroupKernel, _FlatTailKernel,
-                                                                 _InitType, _BinaryOperation, _FlatTuning>;
+        using _FlatOneKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_one_kernel<_CustomName>>;
+        using _FlatSubmitter =
+            __segmented_reduce_flat_submitter<_Acc, _FlatKernel, _FlatGroupKernel, _FlatTailKernel, _FlatOneKernel,
+                                              _InitType, _BinaryOperation, _FlatTuning>;
 
         _FlatSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
     }
