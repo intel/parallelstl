@@ -79,12 +79,12 @@ struct __segmented_reduce_variable_brick
             __atomic_ref_t __ref(__max_length[0]);
             __ref.fetch_max(static_cast<std::uint32_t>(std::min<std::uint64_t>(
                 static_cast<std::uint64_t>(__end - __begin), std::numeric_limits<std::uint32_t>::max())));
-
-            return;
         }
-
-        std::get<0>(__result[__idx]) =
-            oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(__input, __begin, __end, __init, __binary_op);
+        else
+        {
+            std::get<0>(__result[__idx]) =
+                oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(__input, __begin, __end, __init, __binary_op);
+        }
     }
 };
 
@@ -134,10 +134,8 @@ struct __segmented_reduce_chunk_tuning
             return std::clamp<std::size_t>(oneapi::dpl::__internal::__dpl_bit_ceil(__root), __gpu_min_chunk_size,
                                            __gpu_max_chunk_size);
         }
-        else
-        {
-            return __cpu_chunk_size;
-        }
+
+        return __cpu_chunk_size;
     }
 };
 
@@ -263,11 +261,12 @@ struct __segmented_reduce_combine_brick
         {
             if (__write_empty)
                 std::get<0>(__result[__idx]) = __segmented_reduce_to_acc<_Acc>(__init);
-            return;
         }
-
-        std::get<0>(__result[__idx]) = oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
-            __partials, __first + 1, __last, _Acc(__partials[__first]), __binary_op);
+        else
+        {
+            std::get<0>(__result[__idx]) = oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
+                __partials, __first + 1, __last, _Acc(__partials[__first]), __binary_op);
+        }
     }
 };
 
@@ -397,6 +396,7 @@ struct __segmented_reduce_flat_tuning
     {
         if (__n <= __m * __short_average_segment)
             return __geometry_of<__short_segments>(__q, __n);
+
         return __geometry_of<__long_segments>(__q, __n);
     }
 
@@ -512,6 +512,7 @@ struct __segmented_reduce_flat_submitter<
         // two are apart, so that the one without has no local memory to set up
         auto __pieces = [&](auto __in_group_tag) {
             constexpr bool __in_group_v = decltype(__in_group_tag)::value;
+
             return __q.submit([&](sycl::handler& __cgh) {
                 oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
                 auto __units_acc = __get_accessor(sycl::write_only, __units_storage, __cgh, __dpl_sycl::__no_init{});
@@ -862,6 +863,7 @@ struct __segmented_reduce_flat_submitter<
                    : __first < __last
                        ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __head.__v, __at(__first)))
                        : __head.__v;
+
         return __acc.__v;
     }
 
