@@ -777,13 +777,12 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __lane = __sg.get_local_linear_id();
         const std::uint32_t __lanes = __sg.get_local_linear_range();
 
-        auto __at = [&](std::uint32_t __i) -> decltype(auto) { return __element(__input, __base, __i); };
-
         // The accumulators are set up from their first values; a lane not taking part holds none, and what it passes on
         // to the other lanes is never used
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head;
         if (__is_first)
-            __head.__setup(__segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __at(__first++))));
+            __head.__setup(__segmented_reduce_to_acc<_Acc>(
+                std::invoke(__binary_op, __init, __element(__input, __base, __first++))));
 
         // Every lane that takes part gets at least two elements: its accumulator starts from the operation on two of
         // them, never from an element alone, which may mean something else than the element to the operation
@@ -848,13 +847,16 @@ struct __segmented_reduce_flat_submitter<
         if (!__by_vectors && __lane < __active)
         {
             std::uint32_t __i = __first + __lane;
-            __acc.__setup(__segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __at(__i), __at(__i + __active))));
+            __acc.__setup(__segmented_reduce_to_acc<_Acc>(
+                std::invoke(__binary_op, __element(__input, __base, __i), __element(__input, __base, __i + __active))));
             for (__i += 2 * __active; __i + 3 * __active < __last; __i += 4 * __active)
-                __acc.__v = std::invoke(
-                    __binary_op, __acc.__v,
-                    __reduce_four(__at(__i), __at(__i + __active), __at(__i + 2 * __active), __at(__i + 3 * __active)));
+                __acc.__v = std::invoke(__binary_op, __acc.__v,
+                                        __reduce_four(__element(__input, __base, __i),
+                                                      __element(__input, __base, __i + __active),
+                                                      __element(__input, __base, __i + 2 * __active),
+                                                      __element(__input, __base, __i + 3 * __active)));
             for (; __i < __last; __i += __active)
-                __acc.__v = std::invoke(__binary_op, __acc.__v, __at(__i));
+                __acc.__v = std::invoke(__binary_op, __acc.__v, __element(__input, __base, __i));
         }
 
         if (__active > 0)
@@ -862,10 +864,10 @@ struct __segmented_reduce_flat_submitter<
 
         // A range of one element more than the initial value takes it alone
         if (__is_first)
-            return __active > 0 ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __head.__v, __acc.__v))
-                   : __first < __last
-                       ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __head.__v, __at(__first)))
-                       : __head.__v;
+            return __active > 0       ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __head.__v, __acc.__v))
+                   : __first < __last ? __segmented_reduce_to_acc<_Acc>(
+                                            std::invoke(__binary_op, __head.__v, __element(__input, __base, __first)))
+                                      : __head.__v;
 
         return __acc.__v;
     }
