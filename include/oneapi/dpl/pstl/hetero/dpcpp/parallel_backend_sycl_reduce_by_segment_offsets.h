@@ -258,6 +258,7 @@ class __segmented_reduce_combine_wrapper;
 // slot with no partial sum is labeled with no segment.
 struct __segmented_reduce_tiles_tuning
 {
+    static constexpr std::uint32_t __lanes = 32;
     static constexpr std::uint32_t __work_group = 256;
     static constexpr std::uint32_t __items_per_work_item = 16;
     static constexpr std::uint32_t __tile = __work_group * __items_per_work_item;
@@ -268,24 +269,43 @@ class __segmented_reduce_tiles_kernel;
 template <typename... _Name>
 class __segmented_reduce_sums_kernel;
 
-// The local memory of both kernels: a tile of values and of their segments, and the parts of the work-items
+// The state of a scan over the work-items of a tile: the last run of the work-items so far, whether it starts after
+// the first of them (__resets) and whether it continues from the previous tile (__at_start)
+template <typename _Acc, typename _Key>
+struct __segmented_reduce_run_state
+{
+    _Key __key;
+    _Acc __value;
+    std::uint8_t __has;
+    std::uint8_t __resets;
+    std::uint8_t __at_start;
+};
+
+// The local memory of both kernels: a tile of values and of their segments, padded by one slot per work-item's part
+// so that the parts of the work-items of a sub-group are in different banks; the bounds of the segments of a tile
+// relative to it; the parts of the work-items and the scan over them
 template <typename _Acc, typename _Key, typename _Size>
 struct __segmented_reduce_tiles_local
 {
+    using _State = __segmented_reduce_run_state<_Acc, _Key>;
+
     __dpl_sycl::__local_accessor<_Acc> __values;
     __dpl_sycl::__local_accessor<_Key> __keys;
+    __dpl_sycl::__local_accessor<std::uint32_t> __bounds;
     __dpl_sycl::__local_accessor<_Key> __first_keys;
     __dpl_sycl::__local_accessor<_Acc> __first_values;
-    __dpl_sycl::__local_accessor<_Key> __last_keys;
-    __dpl_sycl::__local_accessor<_Acc> __last_values;
     __dpl_sycl::__local_accessor<std::uint8_t> __single;
+    __dpl_sycl::__local_accessor<std::int32_t> __next;
+    __dpl_sycl::__local_accessor<_State> __states;
     __dpl_sycl::__local_accessor<_Size> __info;
 
-    __segmented_reduce_tiles_local(sycl::handler& __cgh, std::size_t __tile, std::size_t __work_group)
-        : __values(sycl::range<1>(__tile), __cgh), __keys(sycl::range<1>(__tile), __cgh),
-          __first_keys(sycl::range<1>(__work_group), __cgh), __first_values(sycl::range<1>(__work_group), __cgh),
-          __last_keys(sycl::range<1>(__work_group), __cgh), __last_values(sycl::range<1>(__work_group), __cgh),
-          __single(sycl::range<1>(__work_group), __cgh), __info(sycl::range<1>(3), __cgh)
+    __segmented_reduce_tiles_local(sycl::handler& __cgh, std::size_t __padded_tile, std::size_t __bounds_size,
+                                   std::size_t __work_group)
+        : __values(sycl::range<1>(__padded_tile), __cgh), __keys(sycl::range<1>(__padded_tile), __cgh),
+          __bounds(sycl::range<1>(__bounds_size), __cgh), __first_keys(sycl::range<1>(__work_group), __cgh),
+          __first_values(sycl::range<1>(__work_group), __cgh), __single(sycl::range<1>(__work_group), __cgh),
+          __next(sycl::range<1>(__work_group), __cgh), __states(sycl::range<1>(2 * __work_group), __cgh),
+          __info(sycl::range<1>(3), __cgh)
     {
     }
 };
@@ -299,10 +319,14 @@ template <typename _Acc, typename _Key, typename... _TilesName, typename... _Sum
 struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_kernel_name<_TilesName...>,
                                           __internal::__optional_kernel_name<_SumsName...>, _InitType, _BinaryOperation>
 {
+    static constexpr std::uint32_t __lanes = __segmented_reduce_tiles_tuning::__lanes;
     static constexpr std::uint32_t __work_group = __segmented_reduce_tiles_tuning::__work_group;
     static constexpr std::uint32_t __items = __segmented_reduce_tiles_tuning::__items_per_work_item;
     static constexpr std::uint32_t __tile = __segmented_reduce_tiles_tuning::__tile;
+    static constexpr std::uint32_t __padded_tile = __tile + __tile / __items;
     static constexpr _Key __no_segment = std::numeric_limits<_Key>::max();
+
+    using _State = __segmented_reduce_run_state<_Acc, _Key>;
 
     _InitType __init;
     mutable _BinaryOperation __binary_op;
@@ -330,11 +354,11 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
             oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets);
             auto __sums_acc = __get_accessor(sycl::write_only, __sums, __cgh, __dpl_sycl::__no_init{});
             auto __keys_acc = __get_accessor(sycl::write_only, __keys, __cgh, __dpl_sycl::__no_init{});
-            const _Local __local(__cgh, __tile, __work_group);
+            const _Local __local(__cgh, __padded_tile, __tile + 1, __work_group);
 
             __cgh.parallel_for<_TilesName...>(
                 sycl::nd_range<1>(sycl::range<1>(__num_tiles * __work_group), sycl::range<1>(__work_group)),
-                [=, *this](sycl::nd_item<1> __item) {
+                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
                     __reduce_tile(__item, __input, __offsets, __n, __m, __num_tiles, __local, __sums_acc.__data(),
                                   __keys_acc.__data());
                 });
@@ -356,13 +380,13 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
                 auto __in_keys_acc = __get_accessor(sycl::read_only, *__in_keys, __cgh);
                 auto __out_sums_acc = __get_accessor(sycl::read_write, *__out_sums, __cgh);
                 auto __out_keys_acc = __get_accessor(sycl::read_write, *__out_keys, __cgh);
-                const _Local __local(__cgh, __tile, __work_group);
+                const _Local __local(__cgh, __padded_tile, 1, __work_group);
 
                 __cgh.depends_on(__event);
 
                 __cgh.parallel_for<_SumsName...>(
                     sycl::nd_range<1>(sycl::range<1>(__sum_tiles * __work_group), sycl::range<1>(__work_group)),
-                    [=, *this](sycl::nd_item<1> __item) {
+                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
                         __reduce_sums(__item, __result, _Key(__m), __count, __last_level, __local,
                                       __in_sums_acc.__data(), __in_keys_acc.__data(), __out_sums_acc.__data(),
                                       __out_keys_acc.__data());
@@ -381,6 +405,13 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
     }
 
   private:
+    // The slot of the local memory of the value __j of a tile
+    static std::uint32_t
+    __pad(const std::uint32_t __j)
+    {
+        return __j + __j / __items;
+    }
+
     // The offset __k clipped to the input
     template <typename _OffsetRange, typename _Size>
     static _Size
@@ -389,62 +420,87 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
         return oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k], __n);
     }
 
-    // The first of the clipped offsets [__lo, __hi) greater than __x (__upper) or not less than it, __hi if none
-    template <bool __upper, typename _OffsetRange, typename _Size>
+    // The first index of [__lo, __hi) where __pred is false, __hi if none, for a __pred true and then false: a search
+    // by __lanes probes at once
+    template <typename _SubGroup, typename _Size, typename _Pred>
     static _Size
-    __search(const _OffsetRange& __offsets, const _Size __n, _Size __lo, _Size __hi, const _Size __x)
+    __search(const _SubGroup& __sg, _Size __lo, _Size __hi, _Pred __pred)
     {
+        const std::uint32_t __lane = __sg.get_local_linear_id();
         while (__lo < __hi)
         {
-            const _Size __mid = __lo + (__hi - __lo) / 2;
-            const _Size __b = __bound(__offsets, __n, __mid);
-            const bool __right = __upper ? __b <= __x : __b < __x;
-            __lo = __right ? __mid + 1 : __lo;
-            __hi = __right ? __hi : __mid;
+            const _Size __step = (__hi - __lo + _Size(__lanes) - 1) / _Size(__lanes);
+            const _Size __probe = __lo + _Size(__lane) * __step;
+            const std::uint32_t __true = __dpl_sycl::__reduce_over_group(
+                __sg, std::uint32_t(__probe < __hi && __pred(__probe)), sycl::plus<std::uint32_t>());
+            if (__true == 0)
+                return __lo;
+            __hi = std::min(__hi, __lo + _Size(__true) * __step);
+            __lo = __lo + _Size(__true - 1) * __step + 1;
         }
         return __lo;
     }
 
-    // The first segment of a tile starting at __x: the one containing __x, or the first one starting at __x or later,
-    // __m if none; the empty segments at __x belong to this tile
+    // The first segment of a tile starting at __x, from the first of the offsets not less than __x, __lb: the one
+    // containing __x, or the first one starting at __x or later, __m if none; the empty segments at __x belong to it
     template <typename _OffsetRange, typename _Size>
     static _Size
-    __first_segment(const _OffsetRange& __offsets, const _Size __n, const _Size __m, const _Size __x)
+    __first_segment(const _OffsetRange& __offsets, const _Size __n, const _Size __m, const _Size __x, const _Size __lb)
     {
-        const _Size __lb = __search</*__upper=*/false>(__offsets, __n, _Size{0}, __m + 1, __x);
         if (__lb <= __m && __bound(__offsets, __n, __lb) == __x)
             return __lb;
         return __lb == 0 ? 0 : __lb - 1;
     }
 
-    // The reduction of the values of the first __count work-items, in work-item 0
+    // The reduction of the values of the first __count work-items, in work-item 0: over every sub-group, then over the
+    // sub-groups
     _Acc
     __reduce_group(const sycl::nd_item<1> __item, const __dpl_sycl::__local_accessor<_Acc>& __values,
-                   const std::uint32_t __lid, const oneapi::dpl::__internal::__lazy_ctor_storage<_Acc>& __value,
-                   const std::uint32_t __count) const
+                   const oneapi::dpl::__internal::__lazy_ctor_storage<_Acc>& __value, const std::uint32_t __count) const
     {
-        if (__lid < __count)
-            __values[__lid] = __value.__v;
-        for (std::uint32_t __s = __work_group / 2; __s > 0; __s /= 2)
-        {
-            sycl::group_barrier(__item.get_group());
-            if (__lid < __s && __lid + __s < __count)
-                __values[__lid] = std::invoke(__binary_op, __values[__lid], __values[__lid + __s]);
-        }
-        return __values[0];
+        const auto __sg = __item.get_sub_group();
+        const std::uint32_t __lane = __sg.get_local_linear_id();
+        const std::uint32_t __sg_id = __sg.get_group_linear_id();
+        const std::uint32_t __lid = __item.get_local_linear_id();
+
+        auto __reduce_lanes = [&](_Acc __v, const std::uint32_t __num_valid) {
+            for (std::uint32_t __s = __lanes / 2; __s > 0; __s /= 2)
+            {
+                const _Acc __other = sycl::shift_group_left(__sg, __v, __s);
+                __v = __lane + __s < __num_valid ? std::invoke(__binary_op, __v, __other) : __v;
+            }
+            return __v;
+        };
+
+        const std::uint32_t __sg_begin = __sg_id * __lanes;
+        const std::uint32_t __sg_valid = __count > __sg_begin ? std::min(__count - __sg_begin, __lanes) : 0;
+        // The lanes past the values take the value of the first lane, which never takes part
+        const _Acc __first = sycl::select_from_group(__sg, __value.__v, 0);
+        const _Acc __v = __reduce_lanes(__lid < __count ? __value.__v : __first, __sg_valid);
+        if (__lane == 0 && __sg_valid > 0)
+            __values[__sg_id] = __v;
+        sycl::group_barrier(__item.get_group());
+
+        const std::uint32_t __groups = oneapi::dpl::__internal::__dpl_ceiling_div(__count, __lanes);
+        _Acc __w = __values[__lane < __groups ? __lane : 0];
+        if (__sg_id == 0)
+            __w = __reduce_lanes(__w, __groups);
+        return __w;
     }
 
     // Reduces a tile of labeled values in the local memory, __len of them, the values labeled with no segment or with
-    // __num_keys or more skipped: unordered offsets may leave slots unwritten, which no result may be written from.
-    // A work-item takes __items consecutive values; a run of one segment that starts in a work-item is completed by it
-    // over the parts of the following work-items. Every run is passed to __emit with whether it continues from the
-    // previous tile, labeled __prev_key at its end, and into the next one, labeled __next_key at its start.
+    // __num_keys or more skipped: unordered offsets may leave slots unwritten, which no result may be written from. A
+    // work-item takes __items consecutive values and passes the runs of one segment inside them to __emit; the runs
+    // crossing work-items are joined by a scan over the work-items and passed by the work-item where they end. Every
+    // run is passed with whether it continues from the previous tile, labeled __prev_key at its end, and into the next
+    // one, labeled __next_key at its start.
     template <typename _Size, typename _Emit>
     void
     __reduce_keyed_tile(const sycl::nd_item<1> __item, const __segmented_reduce_tiles_local<_Acc, _Key, _Size>& __local,
                         const std::uint32_t __len, const _Key __num_keys, const _Key __prev_key, const _Key __next_key,
                         _Emit __emit) const
     {
+        const auto __group = __item.get_group();
         const std::uint32_t __lid = __item.get_local_linear_id();
         const std::uint32_t __from = std::min(__len, __lid * __items);
         const std::uint32_t __to = std::min(__len, __from + __items);
@@ -455,12 +511,12 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
         std::uint32_t __runs = 0;
         for (std::uint32_t __j = __from; __j < __to; ++__j)
         {
-            const _Key __k = __local.__keys[__j];
+            const _Key __k = __local.__keys[__pad(__j)];
             if (__k >= __num_keys)
                 continue;
             if (__k == __key)
             {
-                __value.__v = std::invoke(__binary_op, __value.__v, __local.__values[__j]);
+                __value.__v = std::invoke(__binary_op, __value.__v, __local.__values[__pad(__j)]);
                 continue;
             }
             // A run ends: the first one of the work-item, or one inside it
@@ -473,66 +529,93 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
                 __emit(__key, __value.__v, false, false);
             ++__runs;
             __key = __k;
-            __value.__setup(__local.__values[__j]);
+            __value.__setup(__local.__values[__pad(__j)]);
         }
+        const bool __has_values = __runs > 0;
         const bool __single = __runs == 1;
         if (__single)
         {
             __first_key = __key;
             __first_value.__setup(__value.__v);
         }
+
+        // The last work-item before this one with values; the first run of the first one may continue the previous
+        // tile
+        const std::int32_t __prev =
+            __dpl_sycl::__exclusive_scan_over_group(__group, __has_values ? std::int32_t(__lid) : std::int32_t(-1),
+                                                    std::int32_t(-1), sycl::maximum<std::int32_t>());
+        const bool __first_at_start = __prev < 0 && __prev_key == __first_key;
+
         __local.__first_keys[__lid] = __first_key;
-        __local.__last_keys[__lid] = __key;
         __local.__single[__lid] = __single;
-        if (__runs > 0)
-        {
+        if (__has_values)
             __local.__first_values[__lid] = __first_value.__v;
-            __local.__last_values[__lid] = __value.__v;
+        // The last run of the work-item, as the element of the scan
+        _State __state{__key, __value.__v, std::uint8_t(__has_values), std::uint8_t(!__single),
+                       std::uint8_t(__single && __first_at_start)};
+        __local.__states[__lid] = __state;
+        sycl::group_barrier(__group);
+
+        // The next work-item with values, by a scan over the work-items in the reverse order
+        const std::uint32_t __rev = __work_group - 1 - __lid;
+        const std::int32_t __next = __dpl_sycl::__exclusive_scan_over_group(
+            __group, __local.__first_keys[__rev] != __no_segment ? std::int32_t(__rev) : std::int32_t(__work_group),
+            std::int32_t(__work_group), sycl::minimum<std::int32_t>());
+        __local.__next[__rev] = __next;
+
+        // An inclusive scan of the last runs over the work-items, two buffers of the states
+        auto __combine = [&](const _State& __a, const _State& __b) {
+            if (!__b.__has)
+                return __a;
+            if (!__a.__has || __b.__resets)
+                return __b;
+            if (__a.__key == __b.__key)
+                return _State{__b.__key, std::invoke(__binary_op, __a.__value, __b.__value), 1, __a.__resets,
+                              __a.__at_start};
+            return _State{__b.__key, __b.__value, 1, 1, 0};
+        };
+        std::uint32_t __buffer_in = 0;
+        for (std::uint32_t __s = 1; __s < __work_group; __s *= 2)
+        {
+            if (__lid >= __s)
+                __state = __combine(__local.__states[__buffer_in * __work_group + __lid - __s], __state);
+            __buffer_in = 1 - __buffer_in;
+            __local.__states[__buffer_in * __work_group + __lid] = __state;
+            sycl::group_barrier(__group);
         }
 
-        // The last work-item before this one with values
-        const std::int32_t __prev = __dpl_sycl::__exclusive_scan_over_group(
-            __item.get_group(), __runs > 0 ? std::int32_t(__lid) : std::int32_t(-1), std::int32_t(-1),
-            sycl::maximum<std::int32_t>());
-        sycl::group_barrier(__item.get_group());
-
-        if (__runs == 0)
+        if (!__has_values)
             return;
 
-        // A run starting in this work-item, with the parts of the following work-items
-        auto __complete = [&](const _Key __k, _Acc __acc, const bool __at_start) {
-            for (std::uint32_t __j = __lid + 1; __j < __work_group; ++__j)
-            {
-                const _Key __fk = __local.__first_keys[__j];
-                if (__fk == __no_segment)
-                    continue;
-                if (__fk != __k)
-                {
-                    __emit(__k, __acc, __at_start, false);
-                    return;
-                }
-                __acc = std::invoke(__binary_op, __acc, __local.__first_values[__j]);
-                if (!__local.__single[__j])
-                {
-                    __emit(__k, __acc, __at_start, false);
-                    return;
-                }
-            }
-            __emit(__k, __acc, __at_start, __next_key == __k);
-        };
+        const std::int32_t __nx = __local.__next[__lid];
+        const bool __at_tile_end = __nx == std::int32_t(__work_group);
 
-        const bool __starts = __prev < 0 || __local.__last_keys[__prev] != __first_key;
-        const bool __at_start = __prev < 0 && __prev_key == __first_key;
-        if (__starts && __single)
-            __complete(__first_key, __first_value.__v, __at_start);
-        if (__starts && !__single)
-            __emit(__first_key, __first_value.__v, __at_start, false);
+        // The first run with the runs before it in the tile
+        _Acc __first_total = __first_value.__v;
+        bool __first_from_start = __first_at_start;
+        if (__lid > 0)
+        {
+            const _State __before = __local.__states[__buffer_in * __work_group + __lid - 1];
+            if (__before.__has && __before.__key == __first_key)
+            {
+                __first_total = std::invoke(__binary_op, __before.__value, __first_value.__v);
+                __first_from_start = __before.__at_start;
+            }
+        }
+        const bool __first_goes_on = !__at_tile_end && __local.__first_keys[__nx] == __first_key;
         if (!__single)
-            __complete(__key, __value.__v, false);
+            __emit(__first_key, __first_total, __first_from_start, false);
+        if (__single && !__first_goes_on)
+            __emit(__first_key, __first_total, __first_from_start, __at_tile_end && __next_key == __first_key);
+
+        // The last run, starting in this work-item
+        const bool __last_goes_on = !__at_tile_end && __local.__first_keys[__nx] == __key;
+        if (!__single && !__last_goes_on)
+            __emit(__key, __value.__v, false, __at_tile_end && __next_key == __key);
     }
 
     // The first kernel, variant A of the note: the tile __wg of the input, [__wg * __tile, (__wg + 1) * __tile), and
-    // the segments it holds, found by binary searches. The partial sum of the tile and the segment __k goes to the slot
+    // the segments it holds, found by searches. The partial sum of the tile and the segment __k goes to the slot
     // __wg + __k; the slot after the last segment of the tile is labeled with no segment when the next tile does not
     // continue that segment.
     template <typename _InRange, typename _OffsetRange, typename _Size>
@@ -542,21 +625,29 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
                   const __segmented_reduce_tiles_local<_Acc, _Key, _Size>& __local, _Acc* const __sums,
                   _Key* const __keys) const
     {
+        const auto __group = __item.get_group();
+        const auto __sg = __item.get_sub_group();
         const std::uint32_t __lid = __item.get_local_linear_id();
         const std::size_t __wg = __item.get_group_linear_id();
         const _Size __tile_begin = _Size(__wg * __tile);
         const _Size __tile_end = std::min<_Size>(__n, __tile_begin + _Size(__tile));
 
-        if (__lid == 0)
+        if (__sg.get_group_linear_id() == 0)
         {
             const bool __last_tile = __wg + 1 == __num_tiles;
-            const _Size __lb =
-                __last_tile ? __m + 1 : __search</*__upper=*/false>(__offsets, __n, _Size{0}, __m + 1, __tile_end);
-            __local.__info[0] = __first_segment(__offsets, __n, __m, __tile_begin);
-            __local.__info[1] = std::min(__lb, __m) - 1;
-            __local.__info[2] = __last_tile ? __m : __first_segment(__offsets, __n, __m, __tile_end);
+            auto __below = [&](const _Size __x) {
+                return [&, __x](const _Size __k) { return __bound(__offsets, __n, __k) < __x; };
+            };
+            const _Size __lb_begin = __search(__sg, _Size{0}, __m + 1, __below(__tile_begin));
+            const _Size __lb_end = __last_tile ? __m + 1 : __search(__sg, _Size{0}, __m + 1, __below(__tile_end));
+            if (__sg.get_local_linear_id() == 0)
+            {
+                __local.__info[0] = __first_segment(__offsets, __n, __m, __tile_begin, __lb_begin);
+                __local.__info[1] = std::min(__lb_end, __m) - 1;
+                __local.__info[2] = __last_tile ? __m : __first_segment(__offsets, __n, __m, __tile_end, __lb_end);
+            }
         }
-        sycl::group_barrier(__item.get_group());
+        sycl::group_barrier(__group);
         const _Size __first = __local.__info[0];
         const _Size __last = __local.__info[1];
         const _Size __next = __local.__info[2];
@@ -600,45 +691,71 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
                 for (__i += _Size(__work_group); __i < __end; __i += _Size(__work_group))
                     __acc.__v = std::invoke(__binary_op, __acc.__v, __input[__i]);
             }
-            const _Acc __sum = __reduce_group(__item, __local.__values, __lid, __acc, __count);
+            const _Acc __sum = __reduce_group(__item, __local.__values, __acc, __count);
             if (__lid == 0)
                 __store(_Key(__first), __sum, false, false);
             return;
         }
 
-        // Several segments: the values in the local memory, labeled with their segments
+        // Several segments: the values in the local memory, and the bounds of the segments relative to the tile there
+        // too unless they do not fit, labeled with their segments
         const std::uint32_t __len = std::uint32_t(__tile_end - __tile_begin);
         for (std::uint32_t __j = __lid; __j < __len; __j += __work_group)
-            __local.__values[__j] = __input[__tile_begin + _Size(__j)];
+            __local.__values[__pad(__j)] = __input[__tile_begin + _Size(__j)];
+
+        const _Size __num_bounds = __last - __first + 2;
+        const bool __local_bounds = __num_bounds <= _Size(__tile + 1);
+        auto __relative = [&](const _Size __k) {
+            return std::uint32_t(std::clamp(__bound(__offsets, __n, __k), __tile_begin, __tile_end) - __tile_begin);
+        };
+        if (__local_bounds)
+        {
+            for (_Size __k = _Size(__lid); __k < __num_bounds; __k += _Size(__work_group))
+                __local.__bounds[__k] = __relative(__first + __k);
+        }
+        sycl::group_barrier(__group);
+        // The bound of the segment __first + __k relative to the tile
+        auto __rel = [&](const _Size __k) {
+            return __local_bounds ? __local.__bounds[__k] : __relative(__first + __k);
+        };
 
         const _Size __start = __bound(__offsets, __n, _Size{0});
         const _Size __finish = __bound(__offsets, __n, __m);
         const std::uint32_t __from = std::min(__len, __lid * __items);
         const std::uint32_t __to = std::min(__len, __from + __items);
+        const _Size __last_k = __last - __first;
         _Size __segment = -1;
-        _Size __segment_end = 0;
+        std::uint32_t __segment_end = 0;
         for (std::uint32_t __j = __from; __j < __to; ++__j)
         {
             const _Size __p = __tile_begin + _Size(__j);
             if (__p < __start || __p >= __finish)
             {
-                __local.__keys[__j] = __no_segment;
+                __local.__keys[__pad(__j)] = __no_segment;
                 continue;
             }
             // Kept among the segments of the tile, so that unordered offsets give no slot of another tile
             if (__segment < 0)
             {
-                __segment = std::max(__first, __search</*__upper=*/true>(__offsets, __n, __first, __last + 1, __p) - 1);
-                __segment_end = __bound(__offsets, __n, __segment + 1);
+                _Size __lo = 0, __hi = __last_k + 1;
+                while (__lo < __hi)
+                {
+                    const _Size __mid = __lo + (__hi - __lo) / 2;
+                    const bool __right = __rel(__mid) <= __j;
+                    __lo = __right ? __mid + 1 : __lo;
+                    __hi = __right ? __hi : __mid;
+                }
+                __segment = std::max(_Size{0}, __lo - 1);
+                __segment_end = __rel(__segment + 1);
             }
-            while (__p >= __segment_end && __segment < __last)
+            while (__j >= __segment_end && __segment < __last_k)
             {
                 ++__segment;
-                __segment_end = __bound(__offsets, __n, __segment + 1);
+                __segment_end = __rel(__segment + 1);
             }
-            __local.__keys[__j] = _Key(__segment);
+            __local.__keys[__pad(__j)] = _Key(__first + __segment);
         }
-        sycl::group_barrier(__item.get_group());
+        sycl::group_barrier(__group);
 
         __reduce_keyed_tile(__item, __local, __len, _Key(__m), __no_segment, __no_segment, __store);
     }
@@ -662,8 +779,8 @@ struct __segmented_reduce_tiles_submitter<_Acc, _Key, __internal::__optional_ker
 
         for (std::uint32_t __j = __lid; __j < __len; __j += __work_group)
         {
-            __local.__keys[__j] = __keys[__tile_begin + __j];
-            __local.__values[__j] = __sums[__tile_begin + __j];
+            __local.__keys[__pad(__j)] = __keys[__tile_begin + __j];
+            __local.__values[__pad(__j)] = __sums[__tile_begin + __j];
         }
         if (__lid == 0)
         {
@@ -732,11 +849,12 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
     if constexpr (std::is_arithmetic_v<_Acc> &&
                   std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
     {
-        if (__is_gpu)
+        sycl::queue __q = __exec.queue();
+        if (__is_gpu &&
+            oneapi::dpl::__internal::__supports_sub_group_size(__q, __segmented_reduce_tiles_tuning::__lanes))
         {
             using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
 
-            sycl::queue __q = __exec.queue();
             auto __submit = [&](auto __key_tag) {
                 using _Key = decltype(__key_tag);
                 using _TilesKernel =
