@@ -1223,8 +1223,9 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
                        __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size,
                                                                                                 __init, __binary_op},
                        __num_partials, oneapi::dpl::__ranges::views::all_read(__chunk_ends), __offsets,
-                       // A zip view, not vectorizable, so that a work-item reduces one chunk, not several in a row
-                       oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
+                        // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                        // (__vector_size == 1), so that a work-item reduces exactly one chunk
+                        oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
                        __input);
 
         __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_combine_wrapper>(__exec),
@@ -1232,7 +1233,8 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
                            __num_partials, __write_empty, __init, __binary_op},
                        __m, oneapi::dpl::__ranges::views::all_read(__chunk_ends),
                        oneapi::dpl::__ranges::views::all_read(__partials),
-                       // A zip view, not vectorizable, so that a work-item combines one segment, not several in a row
+                        // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                        // (__vector_size == 1), so that a work-item combines exactly one segment
                        oneapi::dpl::__ranges::make_zip_view(__result))
             .event()
             .wait_and_throw();
@@ -1266,7 +1268,8 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
     __parallel_for(_BackendTag{}, __exec,
                    __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __threshold, __init,
                                                                                                __binary_op},
-                   // A zip view, not vectorizable, so that a work-item reduces one segment, not several in a row
+                   // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                   // (__vector_size == 1), so that a work-item reduces exactly one segment
                    __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
                    oneapi::dpl::__ranges::views::all(__report_buf))
         .event()
