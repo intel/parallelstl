@@ -585,8 +585,8 @@ struct __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __
     {
         // update ranks to reflect sub-group offsets in and across bins
 
-        // TODO: __prev_sub_group_hist is added to avoid an IGC optimization issue that generates incorrect code at the
-        // time of writing. It may be removed in the future.
+        // TODO: __prev_sub_group_hist is added to avoid an IGC optimization issue that generates incorrect code with
+        // dpwi=1. It may be removed in the future.
         const _LocOffsetT* __prev_sub_group_hist =
             __slm_subgroup_hists + (__sub_group_id == 0 ? 0 : (__sub_group_id - 1) * __bin_count);
         _ONEDPL_PRAGMA_UNROLL
