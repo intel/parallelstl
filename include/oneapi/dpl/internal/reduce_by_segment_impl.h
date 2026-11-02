@@ -283,8 +283,8 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
     };
 
     // The __parallel_for over the segments has a grain of about __threshold elements on average, so that many short
-    // segments do not make a task each; the ones over the chunks and the long segments have a grain of one, as the
-    // OpenMP backend would otherwise run up to 2048 of them in one task
+    // segments do not make a task each; the one over the chunks has a grain of one, as the OpenMP backend would
+    // otherwise run up to 2048 of them in one task
     const std::size_t __segment_grain = std::size_t(std::max<_Size>(1, __threshold / std::max<_Size>(1, __n / __m)));
     __internal::__except_handler([&]() {
         // The short segments, in parallel over the segments; the long ones, at most n / __threshold of them unless the
@@ -369,20 +369,24 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
             },
             /*__grainsize=*/1);
 
-        // The partial results of every long segment, combined in order
-        oneapi::dpl::__par_backend::__parallel_for(
-            __backend_tag{}, __exec, _Size{0}, __num_long,
-            [&](_Size __k_first, _Size __k_last) {
-                for (_Size __k = __k_first; __k < __k_last; ++__k)
-                {
-                    const _Size __first_chunk = __k == 0 ? _Size{0} : __chunk_ends[__k - 1];
-                    _Acc __acc = std::move(__partials[__first_chunk]);
-                    for (_Size __chunk = __first_chunk + 1; __chunk < __chunk_ends[__k]; ++__chunk)
-                        __acc = std::invoke(__binary_op, std::move(__acc), std::move(__partials[__chunk]));
-                    __result_value[__long[__k]] = std::move(__acc);
-                }
-            },
-            /*__grainsize=*/1);
+        // The partial results of every long segment, combined in order: serially when the partial results are few, or
+        // with a grain of about __threshold of them on average
+        auto __combine = [&](_Size __k_first, _Size __k_last) {
+            for (_Size __k = __k_first; __k < __k_last; ++__k)
+            {
+                const _Size __first_chunk = __k == 0 ? _Size{0} : __chunk_ends[__k - 1];
+                _Acc __acc = std::move(__partials[__first_chunk]);
+                for (_Size __chunk = __first_chunk + 1; __chunk < __chunk_ends[__k]; ++__chunk)
+                    __acc = std::invoke(__binary_op, std::move(__acc), std::move(__partials[__chunk]));
+                __result_value[__long[__k]] = std::move(__acc);
+            }
+        };
+        if (__num_chunks <= __threshold)
+            __combine(_Size{0}, __num_long);
+        else
+            oneapi::dpl::__par_backend::__parallel_for(
+                __backend_tag{}, __exec, _Size{0}, __num_long, __combine,
+                std::size_t(std::max<_Size>(1, __threshold / (__num_chunks / __num_long))));
 
         if constexpr (!std::is_trivially_destructible_v<_Acc>)
         {
