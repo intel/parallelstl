@@ -42,7 +42,7 @@
 #ifndef _ONEDPL_REDUCE_BY_SEGMENT_IMPL_H
 #define _ONEDPL_REDUCE_BY_SEGMENT_IMPL_H
 
-#include <algorithm> // std::min, std::upper_bound
+#include <algorithm> // std::min, std::max, std::upper_bound
 #include <atomic>    // std::atomic
 #include <cstdint>
 #include <functional> // std::invoke
@@ -282,8 +282,10 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
                               __internal::__segmented_reduce_clamp_offset(__offsets[__segment + 1], __n));
     };
 
-    // Every __parallel_for below has a grain of one segment or chunk, as the OpenMP backend would otherwise run up to
-    // 2048 of them in one task
+    // The __parallel_for over the segments has a grain of about __threshold elements on average, so that many short
+    // segments do not make a task each; the ones over the chunks and the long segments have a grain of one, as the
+    // OpenMP backend would otherwise run up to 2048 of them in one task
+    const std::size_t __segment_grain = std::size_t(std::max<_Size>(1, __threshold / std::max<_Size>(1, __n / __m)));
     __internal::__except_handler([&]() {
         // The short segments, in parallel over the segments; the long ones, at most n / __threshold of them unless the
         // offsets are not ordered, are only listed. A long segment beyond the list is reduced as a short one.
@@ -310,7 +312,7 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
                         __segmented_reduce_host<_Acc>(__first_value, __begin, __end, __init, __binary_op, _IsVector{});
                 }
             },
-            /*__grainsize=*/1);
+            __segment_grain);
 
         const _Size __num_long = std::min(__num_listed.load(), __capacity);
         if (__num_long == 0)
