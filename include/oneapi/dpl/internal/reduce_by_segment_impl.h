@@ -318,13 +318,20 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
         if (__num_long == 0)
             return;
 
-        // The end of the chunks of every long segment: a serial scan of their numbers
+        // The end of the chunks of every long segment: a serial scan of their numbers, keeping the start of every long
+        // segment and its length, so that the chunks do not read the offsets
         oneapi::dpl::__par_backend::__buffer<_Size> __chunk_ends_buf(__num_long);
         _Size* __chunk_ends = __chunk_ends_buf.get();
+        oneapi::dpl::__par_backend::__buffer<_Size> __long_begins_buf(__num_long);
+        _Size* __long_begins = __long_begins_buf.get();
+        oneapi::dpl::__par_backend::__buffer<_Size> __long_lengths_buf(__num_long);
+        _Size* __long_lengths = __long_lengths_buf.get();
         _Size __num_chunks = 0;
         for (_Size __k = 0; __k < __num_long; ++__k)
         {
             const auto [__begin, __end] = __bounds(__long[__k]);
+            __long_begins[__k] = __begin;
+            __long_lengths[__k] = __end - __begin;
             __num_chunks += (__end - __begin + __chunk_size - 1) / __chunk_size;
             __chunk_ends[__k] = __num_chunks;
         }
@@ -341,8 +348,8 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
                 {
                     const _Size __k = std::upper_bound(__chunk_ends, __chunk_ends + __num_long, __chunk) - __chunk_ends;
                     const _Size __first_chunk = __k == 0 ? _Size{0} : __chunk_ends[__k - 1];
-                    const auto [__begin, __end] = __bounds(__long[__k]);
-                    const _Size __head = (__end - __begin) - (__chunk_ends[__k] - __first_chunk - 1) * __chunk_size;
+                    const _Size __begin = __long_begins[__k];
+                    const _Size __head = __long_lengths[__k] - (__chunk_ends[__k] - __first_chunk - 1) * __chunk_size;
                     const _Size __j = __chunk - __first_chunk;
                     if (__j == 0)
                     {
