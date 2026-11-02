@@ -194,7 +194,8 @@ __segmented_reduce_host(_RandomAccessIterator __first, _Index __begin, _Index __
 
     // An operation returning the accumulator type keeps the implicit conversion of its results and the operation itself
     return __internal::__brick_transform_reduce(
-        __first + __begin + 1, __first + __end, std::invoke(__binary_op, std::move(__init), __first[__begin]),
+        __first + __begin + 1, __first + __end,
+        __internal::__segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, std::move(__init), __first[__begin])),
         [&__binary_op](auto&& __x, auto&& __y) -> _Acc {
             return std::invoke(__binary_op, std::forward<decltype(__x)>(__x), std::forward<decltype(__y)>(__y));
         },
