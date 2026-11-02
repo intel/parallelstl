@@ -54,16 +54,21 @@ __get_num_cooperative_groups(const _Kernel& __kernel, sycl::queue& __q, std::uin
             __q, __work_group_size, __slm_size_bytes);
 
     // The HW reserves SLM for a work group on a limited number of granularities. We must account for this to avoid
-    // launching too many groups.
+    // launching too many groups. Sizes beyond the table are assumed to continue at a 64 KiB granularity, but this
+    // should be re-evaluated when extending support to future hardware.
     constexpr std::uint32_t __kib = 1 << 10;
     constexpr std::uint32_t __slm_granularity_table[] = {
         1 * __kib,  2 * __kib,  4 * __kib,   8 * __kib,   16 * __kib,  24 * __kib,  32 * __kib, 48 * __kib,
         64 * __kib, 96 * __kib, 128 * __kib, 192 * __kib, 256 * __kib, 320 * __kib, 384 * __kib};
+    constexpr std::uint32_t __fallback_slm_granularity = 64 * __kib;
     const std::uint32_t* __slm_granularity_it =
         std::lower_bound(std::cbegin(__slm_granularity_table), std::cend(__slm_granularity_table), __slm_size_bytes);
-    const std::uint32_t __true_slm_size_bytes = (__slm_granularity_it != std::cend(__slm_granularity_table))
-                                                    ? std::min(*__slm_granularity_it, __max_slm_xe)
-                                                    : __slm_size_bytes;
+    const std::uint32_t __reserved_slm_size_bytes =
+        (__slm_granularity_it != std::cend(__slm_granularity_table))
+            ? *__slm_granularity_it
+            : oneapi::dpl::__internal::__dpl_ceiling_div(__slm_size_bytes, __fallback_slm_granularity) *
+                  __fallback_slm_granularity;
+    const std::uint32_t __true_slm_size_bytes = std::min(__reserved_slm_size_bytes, __max_slm_xe);
 
     const std::uint32_t __groups_per_xe_slm_adj = std::min(__max_groups_per_xe, __max_slm_xe / __true_slm_size_bytes);
     const std::uint32_t __concurrent_groups_est = __groups_per_xe_slm_adj * __xes_on_device;
