@@ -90,7 +90,7 @@ jobs:
             backend: tbb
             device_type: HOST
           - os: ubuntu-latest
-            ci_slot: 3
+            ci_slot: 2
             cxx_compiler: icpx
             std: 17
             build_type: release
@@ -111,7 +111,7 @@ jobs:
             backend: tbb
             device_type: HOST
           - os: ubuntu-latest
-            ci_slot: 6
+            ci_slot: 1
             cxx_compiler: clang++
             std: 17
             build_type: release
@@ -146,14 +146,14 @@ jobs:
             backend: tbb
             device_type: HOST
           - os: ubuntu-latest
-            ci_slot: 5
+            ci_slot: 6
             cxx_compiler: icpx
             std: 20
             build_type: RelWithAsserts
             backend: omp
             device_type: HOST
           - os: ubuntu-latest
-            ci_slot: 6
+            ci_slot: 5
             cxx_compiler: g++
             std: 20
             build_type: RelWithAsserts
