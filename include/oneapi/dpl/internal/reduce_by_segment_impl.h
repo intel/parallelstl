@@ -250,6 +250,10 @@ __reduce_by_segment_offsets_impl(__internal::__serial_tag<_IsVector>, _Policy&&,
 inline constexpr std::size_t __segmented_reduce_host_threshold = 32768;
 // - the length of a chunk of a long segment.
 inline constexpr std::size_t __segmented_reduce_host_chunk_size = 16384;
+// A chunk after the first one of a segment starts from the operation on its first two elements, and a long segment
+// has at least one such chunk besides the first one.
+static_assert(__segmented_reduce_host_chunk_size >= 2);
+static_assert(__segmented_reduce_host_threshold >= __segmented_reduce_host_chunk_size);
 
 template <typename _IsVector, typename _ExecutionPolicy, typename _RandomAccessInputIt, typename _SegmentNum,
           typename _RandomAccessOffsetIt, typename _RandomAccessOutputIt, typename _InitType, typename _BinaryOperation>
