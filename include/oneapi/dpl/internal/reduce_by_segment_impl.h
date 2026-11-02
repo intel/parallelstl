@@ -288,7 +288,9 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
     const std::size_t __segment_grain = std::size_t(std::max<_Size>(1, __threshold / std::max<_Size>(1, __n / __m)));
     __internal::__except_handler([&]() {
         // The short segments, in parallel over the segments; the long ones, at most n / __threshold of them unless the
-        // offsets are not ordered, are only listed. A long segment beyond the list is reduced as a short one.
+        // offsets are not ordered, are only listed. A long segment beyond the list is reduced as a short one; which
+        // ones are beyond it depends on the scheduling, so with unordered offsets the grouping of the operations, and
+        // so a floating-point result, may differ from run to run.
         const _Size __capacity = __n / __threshold + 1;
         oneapi::dpl::__par_backend::__buffer<_Size> __long_buf(__capacity);
         _Size* __long = __long_buf.get();
