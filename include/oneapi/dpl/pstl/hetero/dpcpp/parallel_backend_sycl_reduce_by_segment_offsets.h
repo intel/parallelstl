@@ -411,7 +411,8 @@ struct __segmented_reduce_flat_tuning
         const std::size_t __items = _Band::__items(__compute_units, __min_groups, __work_group_size);
         const std::size_t __inputs_per_item = std::clamp<std::size_t>(
             oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items), _Band::__min_inputs(__n), __max_inputs_per_item);
-        auto __groups = [&](std::size_t __size) {
+
+        auto __groups = [__n, __inputs_per_item](std::size_t __size) {
             return oneapi::dpl::__internal::__dpl_ceiling_div(__n, __inputs_per_item * __size);
         };
 
@@ -511,6 +512,7 @@ struct __segmented_reduce_flat_submitter<
         // The first kernel, with the combination of the pieces of a work-group in its local memory or without it: the
         // two are apart, so that the one without has no local memory to set up
         auto __pieces = [&](auto __in_group_tag) {
+
             constexpr bool __in_group_v = decltype(__in_group_tag)::value;
 
             return __q.submit([&](sycl::handler& __cgh) {
@@ -573,6 +575,7 @@ struct __segmented_reduce_flat_submitter<
                     sycl::nd_range<1>(sycl::range<1>(__tail_groups * __tail_work_group_size),
                                       sycl::range<1>(__tail_work_group_size)),
                     [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
+
                         const auto __sg = __item.get_sub_group();
                         const std::uint32_t __unit =
                             __item.get_group(0) * __tail_sub_groups + __sg.get_group_linear_id();
