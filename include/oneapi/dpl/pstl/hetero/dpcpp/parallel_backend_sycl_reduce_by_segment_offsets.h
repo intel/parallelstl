@@ -1162,42 +1162,119 @@ __parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec
 }
 
 // The segments of the input [0, __n) defined by the __m + 1 offsets, reduced into the __m results
-template <typename _Acc, typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
-          typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation,
-          typename _ChunkTuning = __segmented_reduce_chunk_tuning,
+template <typename _Acc, typename _ChunkTuning = __segmented_reduce_chunk_tuning,
           typename _FlatTuning = __segmented_reduce_flat_tuning>
-void
-__parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _InRange&& __input,
-                                     _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n, const _Size __m,
-                                     _InitType __init, _BinaryOperation __binary_op)
+struct __parallel_reduce_by_segment_offsets
 {
-    const bool __is_gpu = __exec.queue().get_device().is_gpu();
-    const _Size __threshold = _ChunkTuning::__threshold(__is_gpu);
-
-    if constexpr (std::is_arithmetic_v<_Acc> &&
-                  std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
+    template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
+              typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
+    void
+    operator()(_BackendTag, _ExecutionPolicy&& __exec, _InRange&& __input, _OffsetRange&& __offsets,
+               _OutRange&& __result, const _Size __n, const _Size __m, _InitType __init,
+               _BinaryOperation __binary_op) const
     {
         sycl::queue __q = __exec.queue();
-        if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__lanes))
+        const bool __is_gpu = __q.get_device().is_gpu();
+
+        if constexpr (std::is_arithmetic_v<_Acc> &&
+                      std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
         {
-            using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
-            using _FlatKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_kernel<_CustomName>>;
-            using _FlatGroupKernel =
-                __internal::__kernel_name_provider<__segmented_reduce_flat_group_kernel<_CustomName>>;
-            using _FlatTailKernel =
-                __internal::__kernel_name_provider<__segmented_reduce_flat_tail_kernel<_CustomName>>;
-            using _FlatSubmitter =
-                __segmented_reduce_flat_submitter<_Acc, _FlatKernel, _FlatGroupKernel, _FlatTailKernel, _InitType,
-                                                  _BinaryOperation, _FlatTuning>;
+            if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__lanes))
+            {
+                using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
+                __reduce_flat<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
+                return;
+            }
+        }
 
-            _FlatSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
-
+        const _Size __threshold = _ChunkTuning::__threshold(__is_gpu);
+        if (__n / __m > __threshold)
+        {
+            // The average segment is long: all the segments in chunks. The longest one selects the chunk length on
+            // GPUs. Every segment without chunks, and so every one where all are empty, gets the initial value.
+            const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
+            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
+                               __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
             return;
         }
+
+        const _Size __max_length = __reduce_short_segments(_BackendTag{}, __exec, __input, __offsets, __result, __n,
+                                                           __m, __threshold, __init, __binary_op);
+        if (__max_length > 0)
+            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
+                               __binary_op, __threshold, /*__write_empty=*/false, __max_length, __n / __threshold);
+    }
+
+  private:
+    // On GPUs arithmetic types by pieces of the input that do not depend on the segments
+    template <typename _CustomName, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size,
+              typename _InitType, typename _BinaryOperation>
+    static void
+    __reduce_flat(sycl::queue& __q, _InRange& __input, _OffsetRange& __offsets, _OutRange& __result, const _Size __n,
+                  const _Size __m, const _InitType& __init, const _BinaryOperation& __binary_op)
+    {
+        using _FlatKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_kernel<_CustomName>>;
+        using _FlatGroupKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_group_kernel<_CustomName>>;
+        using _FlatTailKernel = __internal::__kernel_name_provider<__segmented_reduce_flat_tail_kernel<_CustomName>>;
+        using _FlatSubmitter = __segmented_reduce_flat_submitter<_Acc, _FlatKernel, _FlatGroupKernel, _FlatTailKernel,
+                                                                 _InitType, _BinaryOperation, _FlatTuning>;
+
+        _FlatSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
+    }
+
+    // The length of the longest segment on GPUs, where it selects the chunk length; __n on CPUs, where it does not
+    template <typename _BackendTag, typename _ExecutionPolicy, typename _OffsetRange, typename _Size>
+    static _Size
+    __max_segment_length(_BackendTag, _ExecutionPolicy& __exec, const bool __is_gpu, _OffsetRange& __offsets,
+                         const _Size __n, const _Size __m)
+    {
+        if (__is_gpu)
+        {
+            return __parallel_transform_reduce<_Size, std::true_type>(
+                _BackendTag{}, make_wrapped_policy<__segmented_reduce_length_wrapper>(__exec),
+                oneapi::dpl::maximum<_Size>{},
+                unseq_backend::walk_n<__segmented_reduce_length<_Size>>{__segmented_reduce_length<_Size>{__n}},
+                unseq_backend::__init_value<_Size>{_Size{0}}, oneapi::dpl::__ranges::drop_view_simple(__offsets, _Size{1}),
+                oneapi::dpl::__ranges::take_view_simple(__offsets, __m));
+        }
+
+        return __n;
+    }
+
+    // The short segments, one work-item each; the long ones only report the longest length, which is returned (0 if
+    // there are none), through a buffer, which costs less on GPUs than a copy from device USM
+    template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
+              typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
+    static _Size
+    __reduce_short_segments(_BackendTag, _ExecutionPolicy& __exec, _InRange& __input, _OffsetRange& __offsets,
+                            _OutRange& __result, const _Size __n, const _Size __m, const _Size __threshold,
+                            const _InitType& __init, const _BinaryOperation& __binary_op)
+    {
+        auto __report_buf = __buffer<std::uint32_t>(1).get_buffer();
+        // The buffer has no host data: the atomic maximum starts from the zero written here
+        __report_buf.get_host_access(sycl::write_only)[0] = 0;
+        __parallel_for(_BackendTag{}, __exec,
+                       __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{
+                           __n, __threshold, __init, __binary_op},
+                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                       // (__vector_size == 1), so that a work-item reduces exactly one segment
+                       __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
+                       oneapi::dpl::__ranges::views::all(__report_buf))
+            .event()
+            .wait_and_throw();
+
+        return __report_buf.get_host_access(sycl::read_only)[0];
     }
 
     // Reduces the segments longer than __min_length in chunks; __max_segments bounds the number of such segments
-    auto __reduce_in_chunks = [&](_Size __min_length, bool __write_empty, _Size __max_length, _Size __max_segments) {
+    template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
+              typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
+    static void
+    __reduce_in_chunks(_BackendTag, _ExecutionPolicy& __exec, const bool __is_gpu, _InRange& __input,
+                       _OffsetRange& __offsets, _OutRange& __result, const _Size __n, const _Size __m,
+                       const _InitType& __init, const _BinaryOperation& __binary_op, const _Size __min_length,
+                       const bool __write_empty, const _Size __max_length, const _Size __max_segments)
+    {
         const _Size __chunk_size = _ChunkTuning::__chunk_size(__is_gpu, __max_length);
 
         // The end of the chunks of every segment: an inclusive scan of their numbers, computed from the pairs of
@@ -1225,9 +1302,9 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
                        __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size,
                                                                                                 __init, __binary_op},
                        __num_partials, oneapi::dpl::__ranges::views::all_read(__chunk_ends), __offsets,
-                        // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                        // (__vector_size == 1), so that a work-item reduces exactly one chunk
-                        oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
+                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                       // (__vector_size == 1), so that a work-item reduces exactly one chunk
+                       oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
                        __input);
 
         __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_combine_wrapper>(__exec),
@@ -1235,52 +1312,15 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
                            __num_partials, __write_empty, __init, __binary_op},
                        __m, oneapi::dpl::__ranges::views::all_read(__chunk_ends),
                        oneapi::dpl::__ranges::views::all_read(__partials),
-                        // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                        // (__vector_size == 1), so that a work-item combines exactly one segment
+                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
+                       // (__vector_size == 1), so that a work-item combines exactly one segment
                        oneapi::dpl::__ranges::make_zip_view(__result))
             .event()
             .wait_and_throw();
+
         __scan.event().wait_and_throw();
-    };
-
-    if (__n / __m > __threshold)
-    {
-        // The average segment is long: all the segments in chunks. The longest one selects the chunk length on GPUs.
-        const _Size __max_length =
-            __is_gpu
-                ? __parallel_transform_reduce<_Size, std::true_type>(
-                      _BackendTag{}, make_wrapped_policy<__segmented_reduce_length_wrapper>(__exec),
-                      oneapi::dpl::maximum<_Size>{},
-                      unseq_backend::walk_n<__segmented_reduce_length<_Size>>{__segmented_reduce_length<_Size>{__n}},
-                      unseq_backend::__init_value<_Size>{_Size{0}},
-                      oneapi::dpl::__ranges::drop_view_simple(__offsets, _Size{1}),
-                      oneapi::dpl::__ranges::take_view_simple(__offsets, __m))
-                : __n;
-
-        // Every segment without chunks, and so every one where all are empty, gets the initial value
-        __reduce_in_chunks(_Size{0}, /*__write_empty=*/true, __max_length, __m);
-        return;
     }
-
-    // The short segments, one work-item each; the long ones only report the longest length, through a buffer, which
-    // costs less on GPUs than a copy from device USM
-    auto __report_buf = __buffer<std::uint32_t>(1).get_buffer();
-    // The buffer has no host data: the atomic maximum starts from the zero written here
-    __report_buf.get_host_access(sycl::write_only)[0] = 0;
-    __parallel_for(_BackendTag{}, __exec,
-                   __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __threshold, __init,
-                                                                                               __binary_op},
-                   // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                   // (__vector_size == 1), so that a work-item reduces exactly one segment
-                   __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
-                   oneapi::dpl::__ranges::views::all(__report_buf))
-        .event()
-        .wait_and_throw();
-    const _Size __max_length = __report_buf.get_host_access(sycl::read_only)[0];
-
-    if (__max_length > 0)
-        __reduce_in_chunks(__threshold, /*__write_empty=*/false, __max_length, __n / __threshold);
-}
+};
 
 } // namespace __par_backend_hetero
 } // namespace dpl
