@@ -37,8 +37,7 @@ namespace __par_backend_hetero
 
 // reduce_by_segment with segments defined by offsets
 
-// The accumulator made from the initial value of an empty segment or from a result of the operation: by an implicit
-// conversion, as the RFC requires both to be convertible to the accumulator type
+// Accumulator from the init or an operation result by implicit conversion, as the RFC requires both convertible
 template <typename _Acc, typename _Value>
 _Acc
 __segmented_reduce_to_acc(_Value&& __value)
@@ -46,15 +45,14 @@ __segmented_reduce_to_acc(_Value&& __value)
     return std::forward<_Value>(__value);
 }
 
-// One work-item per short segment. A longer segment is left to the reduction in chunks and only reports its length,
-// capped as only its square root matters, through an atomic maximum.
+// One work-item per short segment; a long one only reports its capped length (only its sqrt matters) via atomic max
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_variable_brick
 {
     static constexpr std::uint8_t __iters_per_item = 1;
 
-    _Size __n = {};         // the size of the input
-    _Size __threshold = {}; // the length of the longest short segment
+    _Size __n = {};         // input size
+    _Size __threshold = {}; // longest short segment length
     _InitType __init;
     mutable _BinaryOperation __binary_op;
 
@@ -88,7 +86,7 @@ struct __segmented_reduce_variable_brick
     }
 };
 
-// The initial value of an empty segment written to its result, which may be a proxy, as of a zip iterator
+// Writes the init of an empty segment to its result, which may be a proxy (e.g. of a zip iterator)
 template <typename _Acc>
 struct __segmented_reduce_assign_init
 {
@@ -105,16 +103,14 @@ struct __segmented_reduce_assign_init
 template <typename _Name>
 class __segmented_reduce_fill_wrapper;
 
-// A short segment is reduced by one work-item, a long one in chunks, each reduced by one work-item, whose partial
-// results one work-item combines; the tuning of the two, measured on GPUs and CPUs as SYCL devices
+// Short segment: one work-item; long: chunks per work-item, then combined by one work-item. Tuned on GPUs and CPUs
 struct __segmented_reduce_chunk_tuning
 {
     // A segment up to this length is short
     static constexpr std::size_t __gpu_short_segment_max = 512;
     static constexpr std::size_t __cpu_short_segment_max = 32768;
 
-    // On GPUs the best chunk length is close to the square root of the longest segment, which balances the serial work
-    // of the two levels, within these bounds; on CPUs the chunk length hardly matters above 1024
+    // GPU: best chunk ~ sqrt(longest segment), balancing both levels, within these bounds; CPU: hardly matters >1024
     static constexpr std::size_t __gpu_min_chunk_size = 64;
     static constexpr std::size_t __gpu_max_chunk_size = 16384;
     static constexpr std::size_t __cpu_chunk_size = 4096;
@@ -139,11 +135,11 @@ struct __segmented_reduce_chunk_tuning
     }
 };
 
-// The length of a segment within the input; a negatively sized segment is empty
+// Segment length within the input; a negatively sized segment is empty
 template <typename _Size>
 struct __segmented_reduce_length
 {
-    _Size __n = {}; // the size of the input
+    _Size __n = {}; // input size
 
     template <typename _OffsetEnd, typename _OffsetBegin>
     _Size
@@ -156,12 +152,13 @@ struct __segmented_reduce_length
     }
 };
 
+// Chunks of a segment (0 if not longer than __min_length), scanned into chunk ends; __length - 1 >= 0 when used
 template <typename _Size>
 struct __segmented_reduce_chunk_count
 {
-    _Size __n = {};          // the size of the input
-    _Size __chunk_size = {}; // the length of a chunk
-    _Size __min_length = {}; // the segments not longer than this have no chunks
+    _Size __n = {};          // input size
+    _Size __chunk_size = {}; // chunk length
+    _Size __min_length = {}; // segments not longer than this have no chunks
 
     template <typename _Bounds>
     _Size
@@ -173,17 +170,16 @@ struct __segmented_reduce_chunk_count
     }
 };
 
-// Reduces one chunk of a long segment. The first chunk of a segment takes the remainder of its length and starts
-// from the operation on the initial value and its first element; every other chunk has exactly __chunk_size elements
-// and starts from the operation on its first two elements.
+// Reduces one chunk of a long segment: the first takes the remainder and starts from op(init, first element);
+// others have exactly __chunk_size elements and start from op(first two elements)
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_chunk_brick
 {
     static constexpr std::uint8_t __iters_per_item = 1;
 
-    _Size __n = {};            // the size of the input
-    _Size __num_segments = {}; // the number of segments
-    _Size __chunk_size = {};   // the length of a chunk
+    _Size __n = {};            // input size
+    _Size __num_segments = {}; // number of segments
+    _Size __chunk_size = {};   // chunk length
     _InitType __init;
     mutable _BinaryOperation __binary_op;
 
@@ -200,7 +196,7 @@ struct __segmented_reduce_chunk_brick
         if (__chunk >= __chunk_ends[__num_segments - 1])
             return;
 
-        // The segment of the chunk: the first one whose chunks end after it
+        // Segment of the chunk: the first whose chunks end after it
         _Size __lo = 0, __hi = __num_segments - 1;
         while (__lo < __hi)
         {
@@ -214,16 +210,16 @@ struct __segmented_reduce_chunk_brick
         const _Size __first_chunk = __lo == 0 ? _Size{0} : _Size(__chunk_ends[__lo - 1]);
         const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo], __n);
         const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo + 1], __n);
+        // First chunk length: the remainder after the full chunks, in [1, __chunk_size]
         const _Size __head = (__end - __begin) - (_Size(__chunk_ends[__lo]) - __first_chunk - 1) * __chunk_size;
 
-        // One loop for every chunk, so that the work-items of a sub-group do not diverge into two long loops
+        // One loop for every chunk, so sub-group work-items do not diverge into two long loops
         const _Size __k = __chunk - __first_chunk;
         const _Size __chunk_begin = __k == 0 ? __begin : __begin + __head + (__k - 1) * __chunk_size;
         const _Size __chunk_end = __k == 0 ? __begin + __head : __chunk_begin + __chunk_size;
 
-        // A chunk other than the first one starts from the operation on its first two elements, as a partial result
-        // of std::reduce does: the accumulator is never made from an element alone, which may mean something else than
-        // the element to the operation (such a chunk has at least 64 elements)
+        // Non-first chunks start from op(first two elements) as std::reduce does: an accumulator is never made from a
+        // lone element, which may mean something else to the operation (such a chunk has >= 64 elements)
         _Acc __start = __k == 0
                            ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __input[__chunk_begin]))
                            : __segmented_reduce_to_acc<_Acc>(
@@ -234,13 +230,14 @@ struct __segmented_reduce_chunk_brick
     }
 };
 
+// A work-item per segment combines its chunk partials in chunk order
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_combine_brick
 {
     static constexpr std::uint8_t __iters_per_item = 1;
 
-    _Size __num_partials = {};  // the number of the computed partial results
-    bool __write_empty = false; // whether a segment without chunks gets the initial value; otherwise it is left as is
+    _Size __num_partials = {};  // number of computed partial results
+    bool __write_empty = false; // whether a segment without chunks gets the init; otherwise left as is
     _InitType __init;
     mutable _BinaryOperation __binary_op;
 
@@ -254,8 +251,8 @@ struct __segmented_reduce_combine_brick
 
         const _Size __first = __idx == 0 ? _Size{0} : _Size(__chunk_ends[__idx - 1]);
 
-        // A segment without chunks is empty, or short and already reduced. Unordered offsets may give more chunks than
-        // computed: their results are unspecified.
+        // No chunks: empty, or short and already reduced. Unordered offsets may exceed the computed chunks:
+        // results unspecified
         const _Size __last = std::min<_Size>(__chunk_ends[__idx], __num_partials);
         if (__first >= __last)
         {
@@ -270,7 +267,7 @@ struct __segmented_reduce_combine_brick
     }
 };
 
-// Whether a range reaches its elements through a pointer, so that consecutive elements can be loaded as one vector
+// Whether a range is pointer-based, so consecutive elements can be loaded as one vector
 template <typename _Range, typename = void>
 struct __segmented_reduce_pointer_input : std::false_type
 {
@@ -284,52 +281,43 @@ struct __segmented_reduce_pointer_input<
 // The launch of the flat path
 struct __segmented_reduce_flat_geometry
 {
-    std::size_t __work_group_size = {}; // a multiple of the size of a sub-group
+    std::size_t __work_group_size = {}; // multiple of the sub-group size
     std::size_t __num_groups = {};
     std::size_t __inputs_per_item = {};
 };
 
-// On GPUs, for arithmetic types: every sub-group takes a piece of consecutive elements, finds the segment covering
-// its start in the offsets and reduces the segments of the piece one after another with coalesced loads, writing the
-// ones it holds whole. The segment begun before the piece gives its head, the one going on past its end its tail; a
-// second kernel combines every tail with the heads of the following pieces its segment covers. Above a size the
-// pieces of a work-group are first combined in its local memory, and the second kernel combines the work-groups.
-// The tuning of the path, measured on GPUs.
+// GPU, arithmetic types: each sub-group takes a piece of consecutive elements, finds its first segment by search and
+// reduces the segments with coalesced loads, writing whole ones. The partial head/tail segments are combined by a
+// second kernel; above a size, a work-group first combines its pieces in local memory. Tuned on GPUs.
 struct __segmented_reduce_flat_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
 
-    // A work-item takes at least this many elements up to this input size, and four times as many above it, so that
-    // the search of a piece and the combination of its parts are paid for, and at most four times as many, so that the
-    // larger inputs are spread over more work-groups than the device runs at once
+    // Min elements per work-item up to __small_input (4x above) to amortize the search and combination; max 4x, so
+    // larger inputs spread over more work-groups than the device runs at once
     static constexpr std::size_t __min_inputs_per_item = 16;
     static constexpr std::size_t __large_min_inputs_per_item = 4 * __min_inputs_per_item;
     static constexpr std::size_t __max_inputs_per_item = 4 * __min_inputs_per_item;
     static constexpr std::size_t __small_input = std::size_t(1) << 20;
 
-    // Segments of at most this many elements on average make the walk of a piece cost more than its loads: there the
-    // elements of a work-item are chosen so that the pieces about fill the hardware threads of the device
+    // Average segment length up to which walking a piece costs more than its loads: size pieces to fill HW threads
     static constexpr std::size_t __short_average_segment = 2048;
 
     static constexpr std::size_t __work_group_size_limit = 256;
     static constexpr std::size_t __tail_work_group_size = 256;
 
-    // Eight compute units per Xe core and eight hardware threads per compute unit, a sub-group each
+    // Xe core: 8 compute units, 8 hardware threads each, a sub-group per thread
     static constexpr std::size_t __compute_units_per_core = 8;
     static constexpr std::size_t __threads_per_compute_unit = 8;
 
-    // A segment of at most this many elements that a piece holds whole is reduced by a lane alone, with the following
-    // ones as long as they are such segments too, a lane each: the sub-group would spend more on combining its lanes
-    // and on walking the segments one at a time than on the elements
+    // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
 
-    // A range takes the vector loads of a sub-group from this many whole vectors on: a shorter one is reduced faster
-    // element by element, as the alignment, the head and the tail of the vectors cost more than the vectors save
+    // Min whole vectors for sub-group vector loads; shorter ranges go faster per element (alignment/head/tail cost)
     static constexpr std::size_t __min_vectors = 8;
 
-    // Above this input the pieces of a work-group are combined in its local memory before the second kernel: there the
-    // stores of every piece and the second kernel over them cost more than the wait of the work-group for its slowest
-    // sub-group, which the many work-groups hide
+    // Above this input, combine pieces in local memory first: per-piece stores and the second kernel cost more than
+    // waiting for the slowest sub-group, which many work-groups hide
     static constexpr std::size_t __group_combine_input = std::size_t(1) << 24;
 
     static bool
@@ -338,17 +326,15 @@ struct __segmented_reduce_flat_tuning
         return __n > __group_combine_input;
     }
 
-    // The guess of a piece refined by interpolation where there are more segments than pieces, where it misses by many
-    // of them; with fewer, it is about right and a step only adds a load
+    // Interpolation refines the piece guess only with more segments than pieces; otherwise a step just adds a load
     static int
     __interpolation_steps(const std::size_t __m, const std::size_t __pieces)
     {
         return __m > __pieces ? 2 : 0;
     }
 
-    // The bands of the average segment length, which the host takes as __n / __m: with short segments on average a
-    // piece per hardware thread, and fewer elements of a work-item up to these inputs, so that more sub-groups share a
-    // small input
+    // Bands by average segment length (__n / __m). Short: a piece per HW thread, fewer elements per work-item for
+    // small inputs so more sub-groups share them
     struct __short_segments
     {
         static constexpr std::size_t __tiny_input = std::size_t(1) << 18;
@@ -371,7 +357,7 @@ struct __segmented_reduce_flat_tuning
         }
     };
 
-    // With longer segments on average twice as many work-groups as Xe cores, as reduce-then-scan has
+    // Long: twice as many work-groups as Xe cores, as in reduce-then-scan
     struct __long_segments
     {
         static std::size_t
@@ -388,9 +374,8 @@ struct __segmented_reduce_flat_tuning
         }
     };
 
-    // The launch for __n elements in __m segments: the work-items of the band of the average segment, the elements of
-    // a work-item within the bounds of the band and above, and the work-groups halved, down to one sub-group, until
-    // there are at least two per Xe core
+    // Launch for __n elements in __m segments: work-items per band, elements per work-item within band bounds, and
+    // work-groups halved (down to one sub-group) until there are at least two per Xe core
     static __segmented_reduce_flat_geometry
     __geometry(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
@@ -430,9 +415,8 @@ class __segmented_reduce_flat_group_kernel;
 template <typename... _Name>
 class __segmented_reduce_flat_tail_kernel;
 
-// The local memory of the first kernel where it combines the pieces of a work-group: the heads and the tails of the
-// pieces, the segments of the tails and the states of the heads, 0 for none, 1 for a segment ending in the piece, 2 for
-// one going on past it; none where it does not
+// First-kernel local memory when combining pieces in a work-group: heads, tails, tail segments and head states
+// (0 none, 1 segment ends in the piece, 2 goes on past it); empty otherwise
 template <bool _InGroup, typename _Acc, typename _Size>
 struct __segmented_reduce_flat_local
 {
@@ -472,37 +456,33 @@ struct __segmented_reduce_flat_submitter<
     operator()(sycl::queue& __q, _InRange&& __input, _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n,
                const _Size __m) const
     {
-        // The accumulators in __lazy_ctor_storage are never destroyed: the path takes arithmetic types only
+        // Accumulators in __lazy_ctor_storage are never destroyed: arithmetic types only
         static_assert(std::is_trivially_destructible_v<_Acc>);
         constexpr std::size_t __sub_group_size = _Tuning::__sub_group_size;
         const __segmented_reduce_flat_geometry __geometry =
             _Tuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
         const std::size_t __work_group_size = __geometry.__work_group_size;
-        // The values the kernels take in 32 bits: they are counted in pieces and work-groups, so that the arguments
-        // of a kernel stay within the part of them passed in registers
+        // Kernel values in 32 bits (counted in pieces and work-groups) so kernel arguments stay in registers
         const std::uint32_t __sub_groups = __work_group_size / __sub_group_size;
         const std::size_t __num_groups = __geometry.__num_groups;
         const std::size_t __ipi = __geometry.__inputs_per_item;
         const std::uint32_t __piece_size = __ipi * __sub_group_size;
 
-        // The units of the second kernel: the work-groups where their pieces are combined in local memory, else the
-        // pieces
+        // Second-kernel units: work-groups when pieces are combined in local memory, else pieces
         const bool __in_group = _Tuning::__combines_in_group(std::size_t(__n));
         const std::uint32_t __num_units = __in_group ? __num_groups : __num_groups * __sub_groups;
         const std::uint32_t __unit_size = __in_group ? __piece_size * __sub_groups : __piece_size;
 
-        // The segments per element, from which a piece guesses the segment covering its start as if the segments were
-        // of the same length, in fixed point: 32 fraction bits, or 16 for 2^31 segments and more, keep the product with
-        // up to 2 * __n elements within 64 bits
+        // Segments per element in fixed point, to guess a piece's first segment assuming equal lengths: 32 fraction
+        // bits (16 for >= 2^31 segments) keep the product with up to 2 * __n elements within 64 bits
         const std::uint32_t __fraction_bits = std::uint64_t(__m) < (std::uint64_t(1) << 31) ? 32 : 16;
         const __segment_estimate __estimate{(std::uint64_t(__m) << __fraction_bits) / std::uint64_t(__n),
                                             __fraction_bits};
 
         const int __interpolation_steps = _Tuning::__interpolation_steps(std::size_t(__m), __num_groups * __sub_groups);
 
-        // The segments of the tails of the units and, after them, the partial results of their heads and of their
-        // tails, in one storage, which costs a call less than two, as measured; of the more aligned of the two types,
-        // so that both arrays start aligned
+        // Unit tail segments, then head and tail partials, in one storage (one call fewer, measured faster), typed by
+        // the more aligned type so both arrays start aligned
         using _Unit = std::conditional_t<(alignof(_Acc) > alignof(_Size)), _Acc, _Size>;
         const std::uint32_t __segment_slots =
             oneapi::dpl::__internal::__dpl_ceiling_div(__num_units * sizeof(_Size), sizeof(_Unit));
@@ -510,8 +490,7 @@ struct __segmented_reduce_flat_submitter<
             oneapi::dpl::__internal::__dpl_ceiling_div(2 * __num_units * sizeof(_Acc), sizeof(_Unit));
         __device_storage<_Unit> __units_storage{__q, __segment_slots + __partial_slots};
 
-        // The first kernel, with the combination of the pieces of a work-group in its local memory or without it: the
-        // two are apart, so that the one without has no local memory to set up
+        // First kernel, with or without in-group combining: separate so the latter sets up no local memory
         auto __pieces = [&](auto __in_group_tag) {
 
             constexpr bool __in_group_v = decltype(__in_group_tag)::value;
@@ -535,6 +514,7 @@ struct __segmented_reduce_flat_submitter<
                     const std::uint32_t __sg_id = __sg.get_group_linear_id();
                     const std::uint32_t __group = __item.get_group(0);
                     const std::uint32_t __piece = __group * std::uint32_t(__sub_groups) + __sg_id;
+                    // In 64 bits: the product may exceed 32 bits before clamping to __n
                     const _Size __piece_begin = std::min<_Size>(__n, _Size(std::size_t(__piece) * __piece_size));
                     const _Size __piece_end = std::min<_Size>(__n, __piece_begin + _Size(__piece_size));
 
@@ -558,8 +538,7 @@ struct __segmented_reduce_flat_submitter<
         sycl::event __event = __in_group ? __pieces(/*__in_group_tag = */ std::true_type{})
                                          : __pieces(/*__in_group_tag = */ std::false_type{});
 
-        // The tail of every unit with the heads of the following units its segment covers, a sub-group per unit;
-        // a single unit has none
+        // Each unit's tail with the following heads its segment covers, a sub-group per unit; none for a single unit
         if (__num_units > 1)
         {
             constexpr std::size_t __tail_work_group_size = _Tuning::__tail_work_group_size;
@@ -591,12 +570,12 @@ struct __segmented_reduce_flat_submitter<
             });
         }
 
-        // Waited here, as the temporary data above is released on return
+        // Wait: the temporary data is released on return
         __event.wait_and_throw();
     }
 
   private:
-    // The number of segments in __x elements as if the segments were of the same length, __x * __m / __n rounded down
+    // Segments in __x elements assuming equal lengths: floor(__x * __m / __n)
     struct __segment_estimate
     {
         std::uint64_t __per_element = {};
@@ -609,8 +588,7 @@ struct __segmented_reduce_flat_submitter<
         }
     };
 
-    // The operation on four values in two pairs, each made an accumulator; taken by value, so that the four are loaded
-    // before the operation waits for any of them
+    // Op on four values as two accumulator pairs; by value so all four load before the op waits on any
     template <typename _A, typename _B, typename _C, typename _D>
     _Acc
     __reduce_four(_A __a, _B __b, _C __c, _D __d) const
@@ -619,9 +597,8 @@ struct __segmented_reduce_flat_submitter<
                            __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __c, __d)));
     }
 
-    // Combines the accumulators of the first __active lanes of a sub-group on lane 0: by the sub-group reduction for an
-    // operation with an identity the group algorithms know, the other lanes giving it; else by a tree of shifts known
-    // at compile time, as a shift known only at run time reaches the registers of the other lanes indirectly
+    // Combines the first __active lanes onto lane 0: sub-group reduce if the op has a known identity (others give it),
+    // else a tree of compile-time shifts, as run-time shifts reach other lanes' registers indirectly
     template <typename _SubGroup>
     _Acc
     __reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active) const
@@ -644,6 +621,8 @@ struct __segmented_reduce_flat_submitter<
                 }
             };
 
+            // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
+
             __step(std::integral_constant<std::uint32_t, 1>{});
             __step(std::integral_constant<std::uint32_t, 2>{});
             __step(std::integral_constant<std::uint32_t, 4>{});
@@ -654,10 +633,8 @@ struct __segmented_reduce_flat_submitter<
         }
     }
 
-    // The index of the last of the __m segments that begins at or before __v, or -1, searched from the segment __guess
-    // in [0, __m - 1]:
-    // steps doubling from it up or down bracket the first segment that begins after __v, and a binary search finds it
-    // in the bracket, so that a guess close to the answer takes a few reads of the offsets instead of log2(__m)
+    // Index of the last of __m segments beginning at or before __v, or -1, searched from __guess in [0, __m - 1]:
+    // doubling steps bracket the answer, then binary search, so a close guess takes a few reads, not log2(__m)
     template <typename _Size, typename _OffsetRange>
     static _Size
     __last_begin(const _OffsetRange __offsets, const _Size __m, const _Size __n, const _Size __v, _Size __guess,
@@ -665,8 +642,7 @@ struct __segmented_reduce_flat_submitter<
     {
         auto __begins_after = [&](_Size __i) { return __segment_begin(__offsets, __i, __n) > __v; };
 
-        // The guess moved by the segments in the distance from its offset to __v, as if the segments around it were of
-        // the same length, and kept in [0, __m - 1]; the distance is at most __n + 1 elements
+        // Move the guess by the segments to __v assuming equal lengths nearby, within [0, __m - 1]; distance <= n + 1
         for (int __step = 0; __step < __steps; ++__step)
         {
             const _Size __at = __segment_begin(__offsets, __guess, __n);
@@ -680,13 +656,14 @@ struct __segmented_reduce_flat_submitter<
             __guess = __next;
         }
 
-        // The first segment that begins after __v is in [__lo, __hi]: every one before __lo begins at or before it
+        // First segment beginning after __v is in [__lo, __hi]: all before __lo begin at or before it
         _Size __lo = 0, __hi = __m;
         if (__begins_after(__guess))
         {
             __hi = __guess;
             for (_Size __step = 1; __hi > 0; __step *= 2)
             {
+                // Relies on signed _Size: the difference may go negative before clamping
                 const _Size __below = std::max<_Size>(_Size{0}, __guess - __step);
                 if (!__begins_after(__below))
                 {
@@ -723,9 +700,8 @@ struct __segmented_reduce_flat_submitter<
         return __lo - 1;
     }
 
-    // What a piece leaves to the second kernel or to its work-group, on lane 0: the partial result of the segment begun
-    // before it (the head; the state 0 for none, 1 for a segment ending in the piece, 2 for one going on past it) and
-    // of the one begun in it going on past its end (the tail), with the segment of the tail, __m for none
+    // A piece's output on lane 0: head partial (state 0 none, 1 ends in the piece, 2 goes on past it) and tail partial
+    // (segment begun in it going on past its end) with the tail's segment, __m for none
     template <typename _Size>
     struct __piece_parts
     {
@@ -756,7 +732,7 @@ struct __segmented_reduce_flat_submitter<
         return __b >= __piece_begin && __e <= __piece_end && __e - __b <= _Size(_Tuning::__tiny_segment);
     }
 
-    // The element at a position from the start of the piece, through the pointer to it where the input gives one
+    // Element at an offset from the piece start, via a pointer where the input has one
     template <typename _InRange, typename _Size>
     static decltype(auto)
     __element(const _InRange __input, const _Size __piece_begin, const std::uint32_t __i)
@@ -767,10 +743,8 @@ struct __segmented_reduce_flat_submitter<
             return __input[__piece_begin + _Size(__i)];
     }
 
-    // Reduces the elements [__base + __first, __base + __last), at least one, by a sub-group onto lane 0: the lanes
-    // take the elements in turn, so that the loads are coalesced, which reorders the operands as the required
-    // commutativity allows. A range that begins its segment starts from the operation on the initial value and its
-    // first element. Arithmetic types only; the positions are counted in 32 bits from __base, the start of a piece.
+    // Sub-group reduces [__base + __first, __base + __last) (non-empty) onto lane 0; lanes interleave for coalescing,
+    // reordering as commutativity allows. A segment start begins with op(init, first). Arithmetic types; 32-bit offsets
     template <typename _SubGroup, typename _Size, typename _Input>
     _Acc
     __reduce_by_sub_group(const _SubGroup __sg, const _Size __base, std::uint32_t __first, const std::uint32_t __last,
@@ -779,21 +753,18 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __lane = __sg.get_local_linear_id();
         const std::uint32_t __sub_group_size = __sg.get_local_linear_range();
 
-        // The accumulators are set up from their first values; a lane not taking part holds none, and what it passes on
-        // to the other lanes is never used
+        // Accumulators start from their first values; an idle lane holds none and what it passes is never used
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head;
         if (__is_first)
             __head.__setup(__segmented_reduce_to_acc<_Acc>(
                 std::invoke(__binary_op, __init, __element(__input, __base, __first++))));
 
-        // Every lane that takes part gets at least two elements: its accumulator starts from the operation on two of
-        // them, never from an element alone, which may mean something else than the element to the operation
+        // Each active lane gets >= 2 elements: an accumulator never comes from a lone element (may differ to the op)
         std::uint32_t __active = std::min<std::uint32_t>(__sub_group_size, (__last - __first) / 2);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
 
-        // Where the input is reached through a pointer, every lane loads four consecutive elements at once, from the
-        // first address aligned for such a vector on; the elements before it and after the last whole vector go to lane
-        // 0. The pairs of a vector keep the accumulator from being made from an element alone.
+        // With a pointer input, each lane loads aligned vectors of four; the unaligned head and tail go to lane 0.
+        // Pairs within a vector keep the accumulator from a lone element.
         bool __by_vectors = false;
         if constexpr (__segmented_reduce_pointer_input<_Input>::value)
         {
@@ -802,12 +773,12 @@ struct __segmented_reduce_flat_submitter<
                           (sizeof(_T) == 1 || sizeof(_T) == 2 || sizeof(_T) == 4 || sizeof(_T) == 8))
             {
                 const _T* const __p = __input.begin() + __base;
-                // Four elements a vector, two of 8 bytes, so that a vector stays within 16 bytes and is aligned as
-                // often
+                // Four elements a vector, two for 8-byte types, to stay within 16 bytes and be aligned as often
                 constexpr std::uint32_t __w = sizeof(_T) == 8 ? 2 : 4;
                 using _V = sycl::vec<_T, __w>;
                 constexpr std::uint32_t __vb = sizeof(_V);
                 const std::uint32_t __mis = std::uint32_t(reinterpret_cast<std::uintptr_t>(__p + __first) % __vb);
+                // First vector-aligned index, at most __last
                 const std::uint32_t __a = std::min<std::uint32_t>(__last, __first + (__vb - __mis) % __vb / sizeof(_T));
                 const std::uint32_t __nv = (__last - __a) / __w;
                 if (__nv >= _Tuning::__min_vectors)
@@ -834,7 +805,7 @@ struct __segmented_reduce_flat_submitter<
                             __acc.__v = std::invoke(__binary_op, __acc.__v, __load4(__k));
                     }
 
-                    // The unaligned head and the tail, at most three elements each (one of 8 bytes), to lane 0
+                    // Unaligned head and tail, at most three elements each (one for 8 bytes), to lane 0
                     if (__lane == 0)
                     {
                         for (std::uint32_t __i = __first; __i < __a; ++__i)
@@ -874,9 +845,8 @@ struct __segmented_reduce_flat_submitter<
         return __acc.__v;
     }
 
-    // A run of very short segments from the segment __s on, a lane each: the lanes before the first one whose segment
-    // is not such a segment reduce theirs alone, from the operation on the initial value and the first element, and
-    // write the empty ones. Returns the number of the segments of the run and the end of its last one.
+    // Run of very short segments from __s, a lane each, up to the first longer one: reduced from op(init, first),
+    // empty ones written. Returns the run's segment count and its last segment's end.
     template <typename _SubGroup, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     std::pair<std::uint32_t, _Size>
     __reduce_tiny_run(const _SubGroup __sg, const _InRange __input, const _OffsetRange __offsets,
@@ -893,6 +863,7 @@ struct __segmented_reduce_flat_submitter<
             __me = __segment_end(__offsets, __mine, __n);
             __run = __is_tiny(__mb, __me, __piece_begin, __piece_end);
         }
+        // Run length: the first lane not in the run, or the sub-group size if all are
         const std::uint32_t __count = __dpl_sycl::__reduce_over_group(
             __sg, __run ? std::uint32_t(_Tuning::__sub_group_size) : __lane, sycl::minimum<std::uint32_t>());
 
@@ -900,6 +871,7 @@ struct __segmented_reduce_flat_submitter<
             __result[__mine] = __init_acc;
         if (__lane < __count && __mb < __me)
         {
+            // Within the piece, whose size fits in 32 bits
             const std::uint32_t __lo = std::uint32_t(__mb - __piece_begin);
             const std::uint32_t __hi = std::uint32_t(__me - __piece_begin);
             _Acc __acc = __segmented_reduce_to_acc<_Acc>(
@@ -920,9 +892,8 @@ struct __segmented_reduce_flat_submitter<
         return {__count, sycl::select_from_group(__sg, __me, __count - 1)};
     }
 
-    // The part of the segment __s, [__b, __e), in the piece by the sub-group: an empty segment begun in the piece and
-    // a segment the piece holds whole are written; the part of one begun before the piece is its head and the part of
-    // one going on past its end its tail
+    // Part [__b, __e) of segment __s in the piece, by the sub-group: empty or whole segments are written; a part begun
+    // before the piece is its head, one going on past its end its tail
     template <typename _SubGroup, typename _InRange, typename _OutRange, typename _Size>
     void
     __reduce_segment_part(const _SubGroup __sg, const _InRange __input, const _OutRange __result, const _Size __s,
@@ -966,8 +937,8 @@ struct __segmented_reduce_flat_submitter<
         }
     }
 
-    // The segments of the piece in order, the same for every lane: from the last one beginning before the piece, so
-    // that the walk meets the empty ones at its start too; the last piece also takes the ones at n
+    // Walk the piece's segments, uniform across lanes, from the last beginning before it so leading empty ones are met;
+    // the last piece also takes those at n
     template <typename _SubGroup, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     void
     __reduce_piece(const _SubGroup __sg, const _InRange __input, const _OffsetRange __offsets, const _OutRange __result,
@@ -979,6 +950,7 @@ struct __segmented_reduce_flat_submitter<
         const bool __last_piece = __piece_end == __n;
         // Below __m, as __piece_begin is below __n
         const _Size __guess = _Size(__estimate(__piece_begin));
+        // Signed _Size: __piece_begin - 1 and the result may be -1 for the first piece, raised to 0
         _Size __s = std::max<_Size>(
             0, __last_begin(__offsets, __m, __n, __piece_begin - 1, __guess, __estimate, __interpolation_steps));
 
@@ -993,7 +965,7 @@ struct __segmented_reduce_flat_submitter<
             {
                 const auto [__count, __run_end] = __reduce_tiny_run(__sg, __input, __offsets, __result, __n, __m, __s,
                                                                     __b, __piece_begin, __piece_end, __init_acc);
-                // The walk goes on after the run; the last segment of the run may end the piece
+                // Continue after the run; its last segment may end the piece. __count >= 1, as segment __s is tiny
                 __s += _Size(__count) - 1;
                 if (__run_end >= __piece_end && !__last_piece)
                     break;
@@ -1009,7 +981,7 @@ struct __segmented_reduce_flat_submitter<
         }
     }
 
-    // The parts of the piece for the second kernel, from lane 0
+    // Piece parts for the second kernel, from lane 0
     template <typename _Size>
     static void
     __store_piece_parts(const std::uint32_t __lane, const std::uint32_t __piece, const _Size __m,
@@ -1024,9 +996,8 @@ struct __segmented_reduce_flat_submitter<
             __tail_segment_of[__piece] = __parts.__tail_segment;
     }
 
-    // The parts of the pieces of a work-group combined in its local memory: lane j of sub-group 0 combines the tail of
-    // piece j with the heads of the following pieces of its segment, and lane 0 the heads of the work-group; a segment
-    // going on past the work-group leaves its tail and the head of the work-group to the second kernel
+    // Combine a work-group's pieces in local memory: lane j of sub-group 0 joins piece j's tail with following heads,
+    // lane 0 the group head; a segment past the work-group leaves its tail and the group head to the second kernel
     template <typename _Size, typename _Local, typename _OutRange>
     void
     __combine_pieces_in_group(const sycl::nd_item<1> __item, const std::uint32_t __sg_id, const std::uint32_t __lane,
@@ -1088,8 +1059,7 @@ struct __segmented_reduce_flat_submitter<
         }
     }
 
-    // The second kernel for the unit __unit, by its sub-group: the tail of the unit with the heads of the following
-    // units its segment covers
+    // Second kernel for __unit, by its sub-group: the unit's tail with the following heads its segment covers
     template <typename _SubGroup, typename _OffsetRange, typename _OutRange, typename _Size>
     void
     __combine_tail_with_heads(const _SubGroup __sg, const _OffsetRange __offsets, const _OutRange __result,
@@ -1104,18 +1074,19 @@ struct __segmented_reduce_flat_submitter<
         if (__s >= __m)
             return;
 
-        // The tail is loaded together with the end of its segment: neither waits for the other
+        // Tail loaded with its segment end so neither waits for the other
+        // Tails follow the heads in the storage
         const _Acc __tail = (__heads + __num_units)[__unit];
         const _Size __e = __segment_end(__offsets, __s, __n);
+        // Units after this one up to the one holding the segment's last element
         const std::uint32_t __heads_count = std::uint32_t(std::size_t(__e - 1) / __unit_size) - __unit;
         if (__heads_count == 0 && __lane == 0)
             __result[__s] = __tail;
         if (__heads_count == 0)
             return;
 
-        // The heads of the following units its segment covers, a head a lane at once and the rest of a long segment
-        // four heads a lane at a time, so that they do not wait for each other: a head is already an accumulator, so a
-        // lane may start from one alone
+        // Following heads: one per lane, then four per lane at a time so loads overlap; heads are already accumulators,
+        // so a lane may start from one alone
         const _Acc* const __first_head = __heads + (__unit + 1);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
         if (__lane < __heads_count)
@@ -1134,18 +1105,16 @@ struct __segmented_reduce_flat_submitter<
     }
 };
 
-// On GPUs, for arithmetic types and a small input: one kernel with a work-group per segment. An empty segment, also
-// one out of the input or with reversed offsets, gets the initial value; in any other one every work-item reduces the
-// elements of the segment a work-group apart, every sub-group combines its work-items, and the first sub-group
-// combines the results of the sub-groups from the local memory. The tuning of the path, measured on GPUs.
+// GPU, arithmetic types, small input: one kernel, a work-group per segment. Empty, out-of-input or reversed segments
+// get the init; otherwise work-items stride by the work-group, sub-groups combine, then sub-group 0 combines them via
+// local memory. Tuned on GPUs.
 struct __segmented_reduce_group_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
     static constexpr std::size_t __work_group_size_limit = 256;
 
-    // Up to this many elements and segments the work-groups, a segment each, cost less than the second kernel of the
-    // flat path whatever the lengths of the segments; above it a few long segments leave most of the device idle, as
-    // a work-group reduces each. The positions within a segment fit in 32 bits.
+    // Up to this many elements and segments, a work-group per segment beats the flat path's second kernel for any
+    // lengths; above, a few long segments leave the device idle. Positions within a segment fit in 32 bits.
     static constexpr std::size_t __max_input = std::size_t(1) << 12;
     static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
 
@@ -1155,7 +1124,7 @@ struct __segmented_reduce_group_tuning
         return __n <= __max_input && __m <= __max_input;
     }
 
-    // A power of two sub-groups about as many work-items as the average segment has elements, within the bounds
+    // Power-of-two sub-groups, about the average segment length in work-items, within the bounds
     static std::size_t
     __work_group_size(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
@@ -1212,7 +1181,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                     const _Size __end =
                         oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__segment + 1], __n);
 
-                    // The same for the whole work-group, which so leaves before any barrier
+                    // Uniform across the work-group, so it leaves before any barrier
                     if (__begin >= __end)
                     {
                         if (__lid == 0)
@@ -1220,9 +1189,8 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                         return;
                     }
 
-                    // The first work-item starts from the operation on the initial value and the first element; a
-                    // work-item past the length of the segment starts from its first element, which the combinations
-                    // below skip
+                    // Work-item 0 starts from op(init, first); one past the segment length starts from the first
+                    // element, skipped by the combinations below
                     const std::uint32_t __length = __end - __begin;
                     const std::uint32_t __first = __lid < __length ? __lid : 0;
                     _Acc __acc = __lid == 0 ? __segmented_reduce_to_acc<_Acc>(
@@ -1239,7 +1207,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                         __items > __sg_first ? std::min(__sub_group_size, __items - __sg_first) : 0;
                     __acc = __reduce_lanes(__sg, __acc, __active);
 
-                    // The same for the whole work-group, as the barrier needs
+                    // Uniform across the work-group, as the barrier needs
                     const std::uint32_t __active_sub_groups =
                         oneapi::dpl::__internal::__dpl_ceiling_div(__items, __sub_group_size);
                     if (__active_sub_groups > 1)
@@ -1252,6 +1220,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                         if (__sg_id == 0)
                         {
                             const std::uint32_t __lane = __sg.get_local_linear_id();
+                            // Inactive lanes read slot 0 to stay in bounds; their values are not used
                             __acc = __reduce_lanes(__sg, __loc_partials_acc[__lane < __active_sub_groups ? __lane : 0],
                                                    __active_sub_groups);
                         }
@@ -1262,14 +1231,13 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                 });
         });
 
-        // Waited here, as the algorithm has no asynchronous interface
+        // Wait: the algorithm has no asynchronous interface
         __event.wait_and_throw();
     }
 
   private:
-    // Combines the accumulators of the first __active lanes of a sub-group on lane 0: by the sub-group reduction for an
-    // operation with an identity the group algorithms know, the other lanes giving it; else by a tree of shifts known
-    // at compile time
+    // Combines the first __active lanes onto lane 0: sub-group reduce if the op has a known identity (others give it),
+    // else a tree of compile-time shifts
     template <typename _SubGroup>
     _Acc
     __reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active) const
@@ -1292,6 +1260,8 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                 }
             };
 
+            // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
+
             __step(std::integral_constant<std::uint32_t, 1>{});
             __step(std::integral_constant<std::uint32_t, 2>{});
             __step(std::integral_constant<std::uint32_t, 4>{});
@@ -1303,7 +1273,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
     }
 };
 
-// Whether a temporary storage is a SYCL buffer, whose accessors order the kernels that write and read it
+// Whether a temporary storage is a SYCL buffer, whose accessors order the kernels using it
 template <typename _Storage>
 struct __segmented_reduce_is_buffer : std::false_type
 {
@@ -1323,14 +1293,14 @@ class __segmented_reduce_chunk_wrapper;
 template <typename _Name>
 class __segmented_reduce_combine_wrapper;
 
-// Writes the initial value into every result: the input is empty, so every segment is
+// Writes the init into every result, as the input is empty
 template <typename _Acc, typename _BackendTag, typename _ExecutionPolicy, typename _Range, typename _Size,
           typename _InitType>
 void
 __parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec, _Range&& __result, _Size __m,
                                           const _InitType& __init)
 {
-    // A separate kernel name: the reduction kernel of the same call is instantiated too
+    // Separate kernel name, as the same call also instantiates the reduction kernel
     __parallel_for(_BackendTag{},
                    make_wrapped_policy<__segmented_reduce_fill_wrapper>(std::forward<_ExecutionPolicy>(__exec)),
                    unseq_backend::walk_n_vectors_or_scalars<__segmented_reduce_assign_init<_Acc>>{
@@ -1340,7 +1310,7 @@ __parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec
         .wait_and_throw();
 }
 
-// The segments of the input [0, __n) defined by the __m + 1 offsets, reduced into the __m results
+// Reduces the segments of [0, __n) given by __m + 1 offsets into __m results
 template <typename _Acc, typename _ChunkTuning = __segmented_reduce_chunk_tuning,
           typename _FlatTuning = __segmented_reduce_flat_tuning,
           typename _GroupTuning = __segmented_reduce_group_tuning>
@@ -1374,8 +1344,7 @@ struct __parallel_reduce_by_segment_offsets
         const _Size __threshold = _ChunkTuning::__short_segment_max(__is_gpu);
         if (__n / __m > __threshold)
         {
-            // The average segment is long: all the segments in chunks. The longest one selects the chunk length on
-            // GPUs. Every segment without chunks, and so every one where all are empty, gets the initial value.
+            // Long average segment: all in chunks, chunk length from the longest on GPUs; chunkless segments get init
             const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
             __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
                                __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
@@ -1384,13 +1353,14 @@ struct __parallel_reduce_by_segment_offsets
 
         const _Size __max_length = __reduce_short_segments(_BackendTag{}, __exec, __input, __offsets, __result, __n,
                                                            __m, __threshold, __init, __binary_op);
+        // At most __n / __threshold segments are longer than __threshold
         if (__max_length > 0)
             __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
                                __binary_op, __threshold, /*__write_empty=*/false, __max_length, __n / __threshold);
     }
 
   private:
-    // On GPUs arithmetic types by pieces of the input that do not depend on the segments
+    // GPU arithmetic types: pieces of the input independent of the segments
     template <typename _CustomName, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size,
               typename _InitType, typename _BinaryOperation>
     static void
@@ -1406,7 +1376,7 @@ struct __parallel_reduce_by_segment_offsets
         _FlatSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
     }
 
-    // On GPUs arithmetic types of a small input by a work-group per segment
+    // GPU arithmetic types, small input: a work-group per segment
     template <typename _CustomName, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size,
               typename _InitType, typename _BinaryOperation>
     static void
@@ -1420,7 +1390,7 @@ struct __parallel_reduce_by_segment_offsets
         _GroupSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
     }
 
-    // The length of the longest segment on GPUs, where it selects the chunk length; __n on CPUs, where it does not
+    // Longest segment length on GPUs (selects the chunk length); __n on CPUs, where it does not matter
     template <typename _BackendTag, typename _ExecutionPolicy, typename _OffsetRange, typename _Size>
     static _Size
     __max_segment_length(_BackendTag, _ExecutionPolicy& __exec, const bool __is_gpu, _OffsetRange& __offsets,
@@ -1439,8 +1409,8 @@ struct __parallel_reduce_by_segment_offsets
         return __n;
     }
 
-    // The short segments, one work-item each; the long ones only report the longest length, which is returned (0 if
-    // there are none), through a buffer, which costs less on GPUs than a copy from device USM
+    // Short segments, a work-item each; returns the longest long-segment length (0 if none) via a buffer, cheaper on
+    // GPUs than a copy from device USM
     template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
               typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
     static _Size
@@ -1449,13 +1419,12 @@ struct __parallel_reduce_by_segment_offsets
                             const _InitType& __init, const _BinaryOperation& __binary_op)
     {
         auto __report_buf = __buffer<std::uint32_t>(1).get_buffer();
-        // The buffer has no host data: the atomic maximum starts from the zero written here
+        // No host data: the atomic maximum starts from this zero
         __report_buf.get_host_access(sycl::write_only)[0] = 0;
         __parallel_for(_BackendTag{}, __exec,
                        __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{
                            __n, __threshold, __init, __binary_op},
-                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                       // (__vector_size == 1), so that a work-item reduces exactly one segment
+                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one segment per item
                        __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
                        oneapi::dpl::__ranges::views::all(__report_buf))
             .event()
@@ -1464,7 +1433,7 @@ struct __parallel_reduce_by_segment_offsets
         return __report_buf.get_host_access(sycl::read_only)[0];
     }
 
-    // Reduces the segments longer than __min_length in chunks; __max_segments bounds the number of such segments
+    // Reduces segments longer than __min_length in chunks; __max_segments bounds their number
     template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
               typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
     static void
@@ -1475,9 +1444,8 @@ struct __parallel_reduce_by_segment_offsets
     {
         const _Size __chunk_size = _ChunkTuning::__chunk_size(__is_gpu, __max_length);
 
-        // The end of the chunks of every segment: an inclusive scan of their numbers, computed from the pairs of
-        // the adjacent offsets. The chunks depend on it through __chunk_ends, so the host does not wait for it; its
-        // future keeps the temporary data of the scan until the partial results are combined.
+        // Chunk ends per segment: inclusive scan of chunk counts from adjacent offsets. Not waited on (the chunks
+        // depend via __chunk_ends); its future keeps the scan's temporaries alive until combining ends.
         auto __chunk_ends = __buffer<_Size>(__m).get_buffer();
         auto __scan = __parallel_transform_scan(
             _BackendTag{}, make_wrapped_policy<__segmented_reduce_scan_wrapper>(__exec),
@@ -1491,7 +1459,7 @@ struct __parallel_reduce_by_segment_offsets
         const _Size __num_partials = __n / __chunk_size + __max_segments + 1;
         auto __partials = __buffer<_Acc>(__num_partials).get_buffer();
 
-        // The scan, the chunks and their combination are ordered only by the accessors of these SYCL buffers
+        // Scan, chunks and combination are ordered only by these SYCL buffers' accessors
         static_assert(__segmented_reduce_is_buffer<decltype(__chunk_ends)>::value &&
                           __segmented_reduce_is_buffer<decltype(__partials)>::value,
                       "the steps of the reduction in chunks rely on the implicit dependencies of SYCL buffers");
@@ -1500,8 +1468,7 @@ struct __parallel_reduce_by_segment_offsets
                        __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size,
                                                                                                 __init, __binary_op},
                        __num_partials, oneapi::dpl::__ranges::views::all_read(__chunk_ends), __offsets,
-                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                       // (__vector_size == 1), so that a work-item reduces exactly one chunk
+                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one chunk per item
                        oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
                        __input);
 
@@ -1510,8 +1477,7 @@ struct __parallel_reduce_by_segment_offsets
                            __num_partials, __write_empty, __init, __binary_op},
                        __m, oneapi::dpl::__ranges::views::all_read(__chunk_ends),
                        oneapi::dpl::__ranges::views::all_read(__partials),
-                       // A zip view: its tuple value type keeps __parallel_for from vectorizing small types
-                       // (__vector_size == 1), so that a work-item combines exactly one segment
+                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one segment per item
                        oneapi::dpl::__ranges::make_zip_view(__result))
             .event()
             .wait_and_throw();
