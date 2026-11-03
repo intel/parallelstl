@@ -120,7 +120,7 @@ struct __segmented_reduce_chunk_tuning
     static constexpr std::size_t __cpu_chunk_size = 4096;
 
     static std::size_t
-    __threshold(bool __is_gpu)
+    __short_segment_max(bool __is_gpu)
     {
         return __is_gpu ? __gpu_short_segment_max : __cpu_short_segment_max;
     }
@@ -1371,7 +1371,7 @@ struct __parallel_reduce_by_segment_offsets
             }
         }
 
-        const _Size __threshold = _ChunkTuning::__threshold(__is_gpu);
+        const _Size __threshold = _ChunkTuning::__short_segment_max(__is_gpu);
         if (__n / __m > __threshold)
         {
             // The average segment is long: all the segments in chunks. The longest one selects the chunk length on
