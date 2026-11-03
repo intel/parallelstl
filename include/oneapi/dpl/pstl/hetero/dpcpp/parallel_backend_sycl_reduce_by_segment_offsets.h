@@ -1424,7 +1424,8 @@ struct __parallel_reduce_by_segment_offsets
         __parallel_for(_BackendTag{}, __exec,
                        __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{
                            __n, __threshold, __init, __binary_op},
-                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one segment per item
+                       // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
+                       // with __iters_per_item == 1, one segment per item
                        __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
                        oneapi::dpl::__ranges::views::all(__report_buf))
             .event()
@@ -1468,7 +1469,8 @@ struct __parallel_reduce_by_segment_offsets
                        __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size,
                                                                                                 __init, __binary_op},
                        __num_partials, oneapi::dpl::__ranges::views::all_read(__chunk_ends), __offsets,
-                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one chunk per item
+                       // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
+                       // with __iters_per_item == 1, one chunk per item
                        oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
                        __input);
 
@@ -1477,7 +1479,8 @@ struct __parallel_reduce_by_segment_offsets
                            __num_partials, __write_empty, __init, __binary_op},
                        __m, oneapi::dpl::__ranges::views::all_read(__chunk_ends),
                        oneapi::dpl::__ranges::views::all_read(__partials),
-                       // Zip view: tuple value type prevents vectorizing (__vector_size == 1), one segment per item
+                       // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
+                       // with __iters_per_item == 1, one segment per item
                        oneapi::dpl::__ranges::make_zip_view(__result))
             .event()
             .wait_and_throw();
