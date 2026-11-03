@@ -284,9 +284,9 @@ struct __segmented_reduce_pointer_input<
 // The launch of the flat path
 struct __segmented_reduce_flat_geometry
 {
-    std::size_t __work_group_size; // a multiple of the size of a sub-group
-    std::size_t __num_groups;
-    std::size_t __inputs_per_item;
+    std::size_t __work_group_size = {}; // a multiple of the size of a sub-group
+    std::size_t __num_groups = {};
+    std::size_t __inputs_per_item = {};
 };
 
 // On GPUs, for arithmetic types: every sub-group takes a piece of consecutive elements, finds the segment covering
@@ -599,8 +599,8 @@ struct __segmented_reduce_flat_submitter<
     // The number of segments in __x elements as if the segments were of the same length, __x * __m / __n rounded down
     struct __segment_estimate
     {
-        std::uint64_t __per_element;
-        std::uint32_t __fraction_bits;
+        std::uint64_t __per_element = {};
+        std::uint32_t __fraction_bits = {};
 
         std::uint64_t
         operator()(const std::uint64_t __x) const
@@ -729,7 +729,7 @@ struct __segmented_reduce_flat_submitter<
     template <typename _Size>
     struct __piece_parts
     {
-        _Size __tail_segment;
+        _Size __tail_segment = {};
         std::uint8_t __head_state = 0;
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head, __tail;
     };
