@@ -297,7 +297,7 @@ struct __segmented_reduce_flat_geometry
 // The tuning of the path, measured on GPUs.
 struct __segmented_reduce_flat_tuning
 {
-    static constexpr std::size_t __lanes = 32;
+    static constexpr std::size_t __sub_group_size = 32;
 
     // A work-item takes at least this many elements up to this input size, and four times as many above it, so that
     // the search of a piece and the combination of its parts are paid for, and at most four times as many, so that the
@@ -359,7 +359,7 @@ struct __segmented_reduce_flat_tuning
         __items(const std::size_t __compute_units, const std::size_t /*__min_groups*/,
                 const std::size_t /*__work_group_size*/)
         {
-            return __threads_per_compute_unit * std::max<std::size_t>(1, __compute_units) * __lanes;
+            return __threads_per_compute_unit * std::max<std::size_t>(1, __compute_units) * __sub_group_size;
         }
 
         static std::size_t
@@ -405,7 +405,7 @@ struct __segmented_reduce_flat_tuning
     __geometry_of(const sycl::queue& __q, const std::size_t __n)
     {
         std::size_t __work_group_size =
-            oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) / __lanes * __lanes;
+            oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) / __sub_group_size * __sub_group_size;
         const std::size_t __compute_units = oneapi::dpl::__internal::__max_compute_units(__q);
         const std::size_t __min_groups = 2 * std::max<std::size_t>(1, __compute_units / __compute_units_per_core);
         const std::size_t __items = _Band::__items(__compute_units, __min_groups, __work_group_size);
@@ -416,8 +416,8 @@ struct __segmented_reduce_flat_tuning
             return oneapi::dpl::__internal::__dpl_ceiling_div(__n, __inputs_per_item * __size);
         };
 
-        while (__work_group_size > __lanes && __groups(__work_group_size) < __min_groups)
-            __work_group_size = std::max(__lanes, __work_group_size / 2 / __lanes * __lanes);
+        while (__work_group_size > __sub_group_size && __groups(__work_group_size) < __min_groups)
+            __work_group_size = std::max(__sub_group_size, __work_group_size / 2 / __sub_group_size * __sub_group_size);
 
         return {__work_group_size, __groups(__work_group_size), __inputs_per_item};
     }
@@ -473,16 +473,16 @@ struct __segmented_reduce_flat_submitter<
     {
         // The accumulators in __lazy_ctor_storage are never destroyed: the path takes arithmetic types only
         static_assert(std::is_trivially_destructible_v<_Acc>);
-        constexpr std::size_t __lanes = _Tuning::__lanes;
+        constexpr std::size_t __sub_group_size = _Tuning::__sub_group_size;
         const __segmented_reduce_flat_geometry __geometry =
             _Tuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
         const std::size_t __work_group_size = __geometry.__work_group_size;
         // The values the kernels take in 32 bits: they are counted in pieces and work-groups, so that the arguments
         // of a kernel stay within the part of them passed in registers
-        const std::uint32_t __sub_groups = __work_group_size / __lanes;
+        const std::uint32_t __sub_groups = __work_group_size / __sub_group_size;
         const std::size_t __num_groups = __geometry.__num_groups;
         const std::size_t __ipi = __geometry.__inputs_per_item;
-        const std::uint32_t __piece_size = __ipi * __lanes;
+        const std::uint32_t __piece_size = __ipi * __sub_group_size;
 
         // The units of the second kernel: the work-groups where their pieces are combined in local memory, else the
         // pieces
@@ -523,7 +523,8 @@ struct __segmented_reduce_flat_submitter<
 
                 const sycl::nd_range<1> __range(sycl::range<1>(__num_groups * __work_group_size),
                                                 sycl::range<1>(__work_group_size));
-                auto __kernel = [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
+                auto __kernel = [=, *this](
+                                    sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
                     _Size* const __tail_segment_of = reinterpret_cast<_Size*>(__units_acc.__data());
                     _Acc* const __heads = reinterpret_cast<_Acc*>(__units_acc.__data() + __segment_slots);
                     _Acc* const __tails = __heads + __num_units;
@@ -561,7 +562,7 @@ struct __segmented_reduce_flat_submitter<
         if (__num_units > 1)
         {
             constexpr std::size_t __tail_work_group_size = _Tuning::__tail_work_group;
-            constexpr std::size_t __tail_sub_groups = __tail_work_group_size / __lanes;
+            constexpr std::size_t __tail_sub_groups = __tail_work_group_size / __sub_group_size;
             const std::size_t __tail_groups =
                 oneapi::dpl::__internal::__dpl_ceiling_div(__num_units, __tail_sub_groups);
 
@@ -574,7 +575,7 @@ struct __segmented_reduce_flat_submitter<
                 __cgh.parallel_for<_TailName...>(
                     sycl::nd_range<1>(sycl::range<1>(__tail_groups * __tail_work_group_size),
                                       sycl::range<1>(__tail_work_group_size)),
-                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
+                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
 
                         const auto __sg = __item.get_sub_group();
                         const std::uint32_t __unit =
@@ -775,7 +776,7 @@ struct __segmented_reduce_flat_submitter<
                           const bool __is_first, const _Input __input) const
     {
         const std::uint32_t __lane = __sg.get_local_linear_id();
-        const std::uint32_t __lanes = __sg.get_local_linear_range();
+        const std::uint32_t __sub_group_size = __sg.get_local_linear_range();
 
         // The accumulators are set up from their first values; a lane not taking part holds none, and what it passes on
         // to the other lanes is never used
@@ -786,7 +787,7 @@ struct __segmented_reduce_flat_submitter<
 
         // Every lane that takes part gets at least two elements: its accumulator starts from the operation on two of
         // them, never from an element alone, which may mean something else than the element to the operation
-        std::uint32_t __active = std::min<std::uint32_t>(__lanes, (__last - __first) / 2);
+        std::uint32_t __active = std::min<std::uint32_t>(__sub_group_size, (__last - __first) / 2);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
 
         // Where the input is reached through a pointer, every lane loads four consecutive elements at once, from the
@@ -811,7 +812,7 @@ struct __segmented_reduce_flat_submitter<
                 if (__nv >= _Tuning::__min_vectors)
                 {
                     __by_vectors = true;
-                    __active = std::min<std::uint32_t>(__lanes, __nv);
+                    __active = std::min<std::uint32_t>(__sub_group_size, __nv);
                     auto __load4 = [&](std::uint32_t __k) -> _Acc {
                         const _V __v = *reinterpret_cast<const _V*>(__p + __a + __w * __k);
                         if constexpr (__w == 2)
@@ -892,7 +893,7 @@ struct __segmented_reduce_flat_submitter<
             __run = __is_tiny(__mb, __me, __piece_begin, __piece_end);
         }
         const std::uint32_t __count = __dpl_sycl::__reduce_over_group(
-            __sg, __run ? std::uint32_t(_Tuning::__lanes) : __lane, sycl::minimum<std::uint32_t>());
+            __sg, __run ? std::uint32_t(_Tuning::__sub_group_size) : __lane, sycl::minimum<std::uint32_t>());
 
         if (__lane < __count && __mb == __me)
             __result[__mine] = __init_acc;
@@ -1093,7 +1094,7 @@ struct __segmented_reduce_flat_submitter<
                               const std::size_t __num_units, const std::size_t __unit_size,
                               const _Size* const __tail_segment_of, const _Acc* const __heads) const
     {
-        constexpr std::uint32_t __lanes = _Tuning::__lanes;
+        constexpr std::uint32_t __sub_group_size = _Tuning::__sub_group_size;
         const std::uint32_t __lane = __sg.get_local_linear_id();
 
         const _Size __s = __tail_segment_of[__unit];
@@ -1116,14 +1117,15 @@ struct __segmented_reduce_flat_submitter<
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
         if (__lane < __heads_count)
             __acc.__setup(__first_head[__lane]);
-        std::uint32_t __k = __lane + __lanes;
-        for (; __k + 3 * __lanes < __heads_count; __k += 4 * __lanes)
+        std::uint32_t __k = __lane + __sub_group_size;
+        for (; __k + 3 * __sub_group_size < __heads_count; __k += 4 * __sub_group_size)
             __acc.__v = std::invoke(__binary_op, __acc.__v,
-                                    __reduce_four(__first_head[__k], __first_head[__k + __lanes],
-                                                  __first_head[__k + 2 * __lanes], __first_head[__k + 3 * __lanes]));
-        for (; __k < __heads_count; __k += __lanes)
+                                    __reduce_four(__first_head[__k], __first_head[__k + __sub_group_size],
+                                                  __first_head[__k + 2 * __sub_group_size],
+                                                  __first_head[__k + 3 * __sub_group_size]));
+        for (; __k < __heads_count; __k += __sub_group_size)
             __acc.__v = std::invoke(__binary_op, __acc.__v, __first_head[__k]);
-        __acc.__v = __reduce_lanes(__sg, __acc.__v, std::min<std::uint32_t>(__heads_count, __lanes));
+        __acc.__v = __reduce_lanes(__sg, __acc.__v, std::min<std::uint32_t>(__heads_count, __sub_group_size));
         if (__lane == 0)
             __result[__s] = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __tail, __acc.__v));
     }
@@ -1135,7 +1137,7 @@ struct __segmented_reduce_flat_submitter<
 // combines the results of the sub-groups from the local memory. The tuning of the path, measured on GPUs.
 struct __segmented_reduce_group_tuning
 {
-    static constexpr std::size_t __lanes = 32;
+    static constexpr std::size_t __sub_group_size = 32;
     static constexpr std::size_t __max_work_group = 256;
 
     // Up to this many elements and segments the work-groups, a segment each, cost less than the second kernel of the
@@ -1154,11 +1156,12 @@ struct __segmented_reduce_group_tuning
     static std::size_t
     __work_group_size(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
-        const std::size_t __max_size = std::max(
-            __lanes, oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) / __lanes * __lanes);
+        const std::size_t __max_size =
+            std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) /
+                                           __sub_group_size * __sub_group_size);
         const std::size_t __average = oneapi::dpl::__internal::__dpl_ceiling_div(__n, __m);
 
-        std::size_t __size = __lanes;
+        std::size_t __size = __sub_group_size;
         while (__size < __average && __size < __max_size)
             __size *= 2;
 
@@ -1186,9 +1189,9 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
     operator()(sycl::queue& __q, _InRange&& __input, _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n,
                const _Size __m) const
     {
-        constexpr std::uint32_t __lanes = _Tuning::__lanes;
+        constexpr std::uint32_t __sub_group_size = _Tuning::__sub_group_size;
         const std::uint32_t __work_group_size = _Tuning::__work_group_size(__q, std::size_t(__n), std::size_t(__m));
-        const std::uint32_t __sub_groups = __work_group_size / __lanes;
+        const std::uint32_t __sub_groups = __work_group_size / __sub_group_size;
         const _Acc __init_acc = __segmented_reduce_to_acc<_Acc>(__init);
 
         sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
@@ -1198,7 +1201,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
             __cgh.parallel_for<_Name...>(
                 sycl::nd_range<1>(sycl::range<1>(std::size_t(__m) * __work_group_size),
                                   sycl::range<1>(__work_group_size)),
-                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
+                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
                     const std::uint32_t __segment = __item.get_group(0);
                     const std::uint32_t __lid = __item.get_local_id(0);
                     const _Size __begin =
@@ -1228,13 +1231,14 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                     const auto __sg = __item.get_sub_group();
                     const std::uint32_t __sg_id = __sg.get_group_linear_id();
                     const std::uint32_t __items = std::min(__length, __work_group_size);
-                    const std::uint32_t __sg_first = __sg_id * __lanes;
-                    const std::uint32_t __active = __items > __sg_first ? std::min(__lanes, __items - __sg_first) : 0;
+                    const std::uint32_t __sg_first = __sg_id * __sub_group_size;
+                    const std::uint32_t __active =
+                        __items > __sg_first ? std::min(__sub_group_size, __items - __sg_first) : 0;
                     __acc = __reduce_lanes(__sg, __acc, __active);
 
                     // The same for the whole work-group, as the barrier needs
                     const std::uint32_t __active_sub_groups =
-                        oneapi::dpl::__internal::__dpl_ceiling_div(__items, __lanes);
+                        oneapi::dpl::__internal::__dpl_ceiling_div(__items, __sub_group_size);
                     if (__active_sub_groups > 1)
                     {
                         if (__active > 0 && __sg.get_local_linear_id() == 0)
@@ -1352,7 +1356,7 @@ struct __parallel_reduce_by_segment_offsets
         if constexpr (std::is_arithmetic_v<_Acc> &&
                       std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
         {
-            if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__lanes))
+            if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__sub_group_size))
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
 
