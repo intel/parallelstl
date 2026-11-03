@@ -132,8 +132,8 @@ Runtime Parameters:
 * Input and output must not overlap. Full aliasing is served by the in-place overloads; partial
   overlap is not supported.
 * All algorithms order keys by the same total order as `kt::gpu::radix_sort`, the order of their
-  order-preserving bit transform: for floating point, `-0.0` sorts before `+0.0`, and NaNs are
-  ordered by sign and payload. Since every algorithm is also stable, the output does not depend on
+  order-preserving bit transform: for floating point, `-0.0` and `+0.0` compare equal (so, by
+  stability, keep their input order), and NaNs are ordered by sign and payload. Since every algorithm is also stable, the output does not depend on
   the `_SortConfig`, so it can be chosen for performance alone.
 * Supported key types, data passing mechanisms (USM pointers, `oneapi::dpl::begin` / `end`,
   `sycl::buffer`, `views::all` / `views::subrange`), and the returned `sycl::event` match the
