@@ -28,7 +28,7 @@ namespace kt = oneapi::dpl::experimental::kt;
 
 #ifndef TEST_VALUE_TYPE
 #    define TEST_KEYS_ONLY 1
-using ValueT = std::uint32_t; // unused by the sorts, only by the reference
+using ValueT = std::uint32_t; // unused; placeholder to compile helpers shared for keys and key-value pairs.
 #else
 using ValueT = TEST_VALUE_TYPE;
 #endif
