@@ -28,7 +28,7 @@ namespace __internal
 
 // The accumulator type: the decayed result of op(init, *first)
 template <typename _InitType, typename _InputIterator, typename _BinaryOperation>
-using __segmented_reduce_acc_t
+using __segmented_reduce_acc_t = std::decay_t<
     std::invoke_result_t<_BinaryOperation&, _InitType, typename std::iterator_traits<_InputIterator>::reference>>;
 
 // Reduces [__begin, __end) as std::ranges::fold_left does; an empty range gives __init
