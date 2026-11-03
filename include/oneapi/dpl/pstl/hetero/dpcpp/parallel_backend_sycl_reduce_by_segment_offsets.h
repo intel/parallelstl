@@ -1139,8 +1139,9 @@ struct __segmented_reduce_group_tuning
     static constexpr std::size_t __max_work_group = 256;
 
     // Up to this many elements and segments the work-groups, a segment each, cost less than the second kernel of the
-    // flat path; the positions within a segment then fit in 32 bits
-    static constexpr std::size_t __max_input = std::size_t(1) << 16;
+    // flat path whatever the lengths of the segments; above it a few long segments leave most of the device idle, as
+    // a work-group reduces each. The positions within a segment fit in 32 bits.
+    static constexpr std::size_t __max_input = std::size_t(1) << 12;
     static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
 
     static bool
