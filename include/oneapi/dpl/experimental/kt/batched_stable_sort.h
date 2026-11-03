@@ -223,7 +223,7 @@ __batched_stable_sort_out_iter(sycl::queue __q, _KeysIterator1 __keys_first, _Ke
     if (__n == 0)
         return {};
 
-    auto __keys_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read_write>();
+    auto __keys_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read>();
     auto __keys_rng = __keys_keep(__keys_first, __keys_last).all_view();
     auto __pack = __rng_pack{std::move(__keys_rng)};
     auto __keys_out_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read_write>();
@@ -277,9 +277,9 @@ __batched_stable_sort_by_key_out_iter(sycl::queue __q, _KeysIterator1 __keys_fir
     if (__n == 0)
         return {};
 
-    auto __keys_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read_write>();
+    auto __keys_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read>();
     auto __keys_rng = __keys_keep(__keys_first, __keys_last).all_view();
-    auto __vals_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read_write>();
+    auto __vals_keep = oneapi::dpl::__ranges::__get_sycl_range<sycl::access_mode::read>();
     auto __vals_rng = __vals_keep(__vals_first, __vals_first + __n).all_view();
     auto __pack = __rng_pack{std::move(__keys_rng), std::move(__vals_rng)};
 
