@@ -706,9 +706,12 @@ test_usm_vector_edges()
     TestUtils::usm_data_transfer<alloc_type, T> in_usm(q, in.begin(), in.end());
     TestUtils::usm_data_transfer<alloc_type, int> offsets_usm(q, offsets.begin(), offsets.end());
     TestUtils::usm_data_transfer<alloc_type, T> out_usm(q, num_segments);
-    oneapi::dpl::reduce_by_segment(CLONE_TEST_POLICY_NAME(policy, NewKernelName), in_usm.get_data() + guard_length,
-                                   in_usm.get_data() + guard_length + n, out_usm.get_data(), num_segments,
-                                   offsets_usm.get_data(), T(5), std::plus<T>{});
+    auto res = oneapi::dpl::reduce_by_segment(CLONE_TEST_POLICY_NAME(policy, NewKernelName),
+                                              in_usm.get_data() + guard_length, in_usm.get_data() + guard_length + n,
+                                              out_usm.get_data(), num_segments, offsets_usm.get_data(), T(5),
+                                              std::plus<T>{});
+    EXPECT_EQ(out_usm.get_data() + num_segments, res,
+              "wrong iterator returned by reduce_by_segment with USM at the vector edges");
     out_usm.retrieve_data(result.begin());
     EXPECT_EQ_N(expected.begin(), result.begin(), num_segments,
                 "wrong result from reduce_by_segment with USM at the vector edges");
