@@ -219,7 +219,7 @@ if (ONEDPL_TEST_ENABLE_KT_SYCL)
     _generate_sort_test("kt_sycl" "batched_stable_sort_single_group" "3" "128" "float" "uint32_t" 1000)
     _generate_sort_test("kt_sycl" "batched_stable_sort_merge_single_group" "4" "256" "uint32_t" "" 1000)
     _generate_sort_test("kt_sycl" "batched_stable_sort_merge_single_group" "3" "128" "float" "uint32_t" 1000)
-    _generate_sort_test("kt_sycl" "batched_stable_sort_merge_single_group" "16" "512" "int32_t" "uint32_t" 1000)
+    _generate_sort_test("kt_sycl" "batched_stable_sort_merge_single_group" "16" "256" "int32_t" "uint32_t" 1000)
 endif()
 
 function (_generate_gpu_scan_test _data_per_work_item _work_group_size _type _probability_permille)
