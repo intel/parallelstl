@@ -444,12 +444,12 @@ struct __segmented_reduce_flat_local<true, _Acc, _Size>
 {
     __dpl_sycl::__local_accessor<_Acc> __loc_heads_tails_acc;
     __dpl_sycl::__local_accessor<_Size> __loc_tail_segments_acc;
-    __dpl_sycl::__local_accessor<std::uint8_t> __slm_states;
+    __dpl_sycl::__local_accessor<std::uint8_t> __loc_head_states_acc;
 
     __segmented_reduce_flat_local(sycl::handler& __cgh, std::size_t __sub_groups)
         : __loc_heads_tails_acc(sycl::range<1>(2 * __sub_groups), __cgh),
           __loc_tail_segments_acc(sycl::range<1>(__sub_groups), __cgh),
-          __slm_states(sycl::range<1>(__sub_groups), __cgh)
+          __loc_head_states_acc(sycl::range<1>(__sub_groups), __cgh)
     {
     }
 };
@@ -1041,7 +1041,7 @@ struct __segmented_reduce_flat_submitter<
             if (__parts.__tail_segment < __m)
                 __local.__loc_heads_tails_acc[__sub_groups + __sg_id] = __parts.__tail.__v;
             __local.__loc_tail_segments_acc[__sg_id] = __parts.__tail_segment;
-            __local.__slm_states[__sg_id] = __parts.__head_state;
+            __local.__loc_head_states_acc[__sg_id] = __parts.__head_state;
         }
 
         // No tail unless found below; the barrier orders this before the writes after it
@@ -1059,7 +1059,7 @@ struct __segmented_reduce_flat_submitter<
             std::uint8_t __state = 2;
             for (std::size_t __k = __lane + 1; __state == 2 && __k < __sub_groups; ++__k)
             {
-                __state = __local.__slm_states[__k];
+                __state = __local.__loc_head_states_acc[__k];
                 if (__state != 0)
                     __acc = __segmented_reduce_to_acc<_Acc>(
                         std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
@@ -1073,13 +1073,13 @@ struct __segmented_reduce_flat_submitter<
             }
         }
 
-        if (__lane == 0 && __local.__slm_states[0] != 0)
+        if (__lane == 0 && __local.__loc_head_states_acc[0] != 0)
         {
             _Acc __acc = __local.__loc_heads_tails_acc[0];
-            std::uint8_t __state = __local.__slm_states[0];
+            std::uint8_t __state = __local.__loc_head_states_acc[0];
             for (std::size_t __k = 1; __state == 2 && __k < __sub_groups; ++__k)
             {
-                __state = __local.__slm_states[__k];
+                __state = __local.__loc_head_states_acc[__k];
                 if (__state != 0)
                     __acc = __segmented_reduce_to_acc<_Acc>(
                         std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
