@@ -442,13 +442,13 @@ struct __segmented_reduce_flat_local
 template <typename _Acc, typename _Size>
 struct __segmented_reduce_flat_local<true, _Acc, _Size>
 {
-    __dpl_sycl::__local_accessor<_Acc> __slm_acc;
+    __dpl_sycl::__local_accessor<_Acc> __loc_heads_tails_acc;
     __dpl_sycl::__local_accessor<_Size> __slm_segments;
     __dpl_sycl::__local_accessor<std::uint8_t> __slm_states;
 
     __segmented_reduce_flat_local(sycl::handler& __cgh, std::size_t __sub_groups)
-        : __slm_acc(sycl::range<1>(2 * __sub_groups), __cgh), __slm_segments(sycl::range<1>(__sub_groups), __cgh),
-          __slm_states(sycl::range<1>(__sub_groups), __cgh)
+        : __loc_heads_tails_acc(sycl::range<1>(2 * __sub_groups), __cgh),
+          __slm_segments(sycl::range<1>(__sub_groups), __cgh), __slm_states(sycl::range<1>(__sub_groups), __cgh)
     {
     }
 };
@@ -1036,9 +1036,9 @@ struct __segmented_reduce_flat_submitter<
         if (__lane == 0)
         {
             if (__parts.__head_state != 0)
-                __local.__slm_acc[__sg_id] = __parts.__head.__v;
+                __local.__loc_heads_tails_acc[__sg_id] = __parts.__head.__v;
             if (__parts.__tail_segment < __m)
-                __local.__slm_acc[__sub_groups + __sg_id] = __parts.__tail.__v;
+                __local.__loc_heads_tails_acc[__sub_groups + __sg_id] = __parts.__tail.__v;
             __local.__slm_segments[__sg_id] = __parts.__tail_segment;
             __local.__slm_states[__sg_id] = __parts.__head_state;
         }
@@ -1054,13 +1054,14 @@ struct __segmented_reduce_flat_submitter<
         const _Size __s = __local.__slm_segments[__lane];
         if (__s < __m)
         {
-            _Acc __acc = __local.__slm_acc[__sub_groups + __lane];
+            _Acc __acc = __local.__loc_heads_tails_acc[__sub_groups + __lane];
             std::uint8_t __state = 2;
             for (std::size_t __k = __lane + 1; __state == 2 && __k < __sub_groups; ++__k)
             {
                 __state = __local.__slm_states[__k];
                 if (__state != 0)
-                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__slm_acc[__k]));
+                    __acc = __segmented_reduce_to_acc<_Acc>(
+                        std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
             }
             if (__state == 1)
                 __result[__s] = __acc;
@@ -1073,13 +1074,14 @@ struct __segmented_reduce_flat_submitter<
 
         if (__lane == 0 && __local.__slm_states[0] != 0)
         {
-            _Acc __acc = __local.__slm_acc[0];
+            _Acc __acc = __local.__loc_heads_tails_acc[0];
             std::uint8_t __state = __local.__slm_states[0];
             for (std::size_t __k = 1; __state == 2 && __k < __sub_groups; ++__k)
             {
                 __state = __local.__slm_states[__k];
                 if (__state != 0)
-                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__slm_acc[__k]));
+                    __acc = __segmented_reduce_to_acc<_Acc>(
+                        std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
             }
             __heads[__group] = __acc;
         }
