@@ -110,8 +110,8 @@ class __segmented_reduce_fill_wrapper;
 struct __segmented_reduce_chunk_tuning
 {
     // A segment up to this length is short
-    static constexpr std::size_t __gpu_threshold = 512;
-    static constexpr std::size_t __cpu_threshold = 32768;
+    static constexpr std::size_t __gpu_short_segment_max = 512;
+    static constexpr std::size_t __cpu_short_segment_max = 32768;
 
     // On GPUs the best chunk length is close to the square root of the longest segment, which balances the serial work
     // of the two levels, within these bounds; on CPUs the chunk length hardly matters above 1024
@@ -122,7 +122,7 @@ struct __segmented_reduce_chunk_tuning
     static std::size_t
     __threshold(bool __is_gpu)
     {
-        return __is_gpu ? __gpu_threshold : __cpu_threshold;
+        return __is_gpu ? __gpu_short_segment_max : __cpu_short_segment_max;
     }
 
     static std::size_t
