@@ -120,6 +120,54 @@ struct __no_values
 };
 
 //-----------------------------------------------------------------------------
+// SLM index swizzle
+//-----------------------------------------------------------------------------
+// Each work-item reads and writes data_per_workitem consecutive elements, so at each step the lanes of a sub-group
+// access SLM with a stride of data_per_workitem elements. For a power-of-two stride, this maps many lanes onto the
+// same bank. Within each row of the banks, the bank position is xor-ed with the row number, which spreads such
+// strided accesses over the banks. Accesses to consecutive elements stay within a row, or are split across two, so
+// remain conflict-free.
+//
+// The mapping only changes the bank position within a row, so it is a bijection on every row; SLM is allocated in
+// whole rows. Types whose size is not a power of two, or larger than a row, are not swizzled.
+//
+// Only power-of-two strides are swizzled: other strides already spread over the banks, and the swizzle would add
+// conflicts to them.
+template <typename _T, std::uint16_t __stride>
+struct __slm_swizzle
+{
+    // Assumed SLM banking
+    static constexpr std::uint32_t __bank_bytes = 4;
+    static constexpr std::uint32_t __bank_count = 16;
+    static constexpr std::uint32_t __row_bytes = __bank_bytes * __bank_count;
+
+    static constexpr bool __pow2_stride = (__stride & (__stride - 1)) == 0;
+    static constexpr bool __pow2_size = (sizeof(_T) & (sizeof(_T) - 1)) == 0;
+    static constexpr bool __enabled = __pow2_stride && __pow2_size && sizeof(_T) <= __row_bytes;
+    // Elements per row, and per bank: an element of more than __bank_bytes spans several banks
+    static constexpr std::uint32_t __row = __enabled ? __row_bytes / sizeof(_T) : 1;
+    static constexpr std::uint32_t __per_bank = sizeof(_T) < __bank_bytes ? __bank_bytes / sizeof(_T) : 1;
+    // Distinct bank positions of an element within a row
+    static constexpr std::uint32_t __positions = __row / __per_bank;
+
+    static std::uint32_t
+    __index(std::uint32_t __i)
+    {
+        if constexpr (__enabled)
+            return __i ^ (((__i / __row) % __positions) * __per_bank);
+        else
+            return __i;
+    }
+
+    // The number of elements to allocate for __n elements
+    static std::size_t
+    __alloc_count(std::size_t __n)
+    {
+        return oneapi::dpl::__internal::__dpl_ceiling_div(__n, __row) * __row;
+    }
+};
+
+//-----------------------------------------------------------------------------
 // In-register stable sort of one work-item's elements
 //-----------------------------------------------------------------------------
 // Odd-even transposition sort: only adjacent elements which are strictly out of order are swapped, so it is stable
@@ -224,9 +272,9 @@ struct __batched_merge_sort_kernel
 
         for (std::uint32_t __i = __lid; __i < __group_size; __i += __work_group_size)
         {
-            __m_slm_keys[__i] = _Codec::__encode(__keys_in[__group_offset + __i]);
+            __slm_key(__i) = _Codec::__encode(__keys_in[__group_offset + __i]);
             if constexpr (__has_values)
-                __m_slm_vals[__i] = __m_in_pack.__vals_rng()[__group_offset + __i];
+                __slm_val(__i) = __m_in_pack.__vals_rng()[__group_offset + __i];
         }
         sycl::group_barrier(__group);
 
@@ -237,9 +285,9 @@ struct __batched_merge_sort_kernel
         {
             if (__s < __count)
             {
-                __keys[__s] = __m_slm_keys[__slm_segment_offset + __start + __s];
+                __keys[__s] = __slm_key(__slm_segment_offset + __start + __s);
                 if constexpr (__has_values)
-                    __vals[__s] = __m_slm_vals[__slm_segment_offset + __start + __s];
+                    __vals[__s] = __slm_val(__slm_segment_offset + __start + __s);
             }
             else
             {
@@ -268,13 +316,25 @@ struct __batched_merge_sort_kernel
 
         for (std::uint32_t __i = __lid; __i < __group_size; __i += __work_group_size)
         {
-            __keys_out[__group_offset + __i] = _Codec::__decode(__m_slm_keys[__i]);
+            __keys_out[__group_offset + __i] = _Codec::__decode(__slm_key(__i));
             if constexpr (__has_values)
-                __m_out_pack.__vals_rng()[__group_offset + __i] = __m_slm_vals[__i];
+                __m_out_pack.__vals_rng()[__group_offset + __i] = __slm_val(__i);
         }
     }
 
   private:
+    // Every SLM access goes through these, so that all agree on the swizzled layout
+    _Bits&
+    __slm_key(std::uint32_t __i) const
+    {
+        return __m_slm_keys[__slm_swizzle<_Bits, __data_per_work_item>::__index(__i)];
+    }
+    _ValStorageT&
+    __slm_val(std::uint32_t __i) const
+    {
+        return __m_slm_vals[__slm_swizzle<_ValStorageT, __data_per_work_item>::__index(__i)];
+    }
+
     static bool
     __less(_Bits __a, _Bits __b)
     {
@@ -290,9 +350,9 @@ struct __batched_merge_sort_kernel
         {
             if (__s < __count)
             {
-                __m_slm_keys[__offset + __s] = __keys[__s];
+                __slm_key(__offset + __s) = __keys[__s];
                 if constexpr (__has_values)
-                    __m_slm_vals[__offset + __s] = __vals[__s];
+                    __slm_val(__offset + __s) = __vals[__s];
             }
         }
     }
@@ -319,7 +379,7 @@ struct __batched_merge_sort_kernel
         const _CountIt __first(__diag > __len_b ? __diag - __len_b : 0);
         const _CountIt __last(std::min(__diag, __len_a));
         auto __a_precedes = [&](std::uint32_t __i) {
-            return !__less(__m_slm_keys[__b_slm + (__diag - __i - 1)], __m_slm_keys[__a_slm + __i]);
+            return !__less(__slm_key(__b_slm + (__diag - __i - 1)), __slm_key(__a_slm + __i));
         };
         const std::uint32_t __lo = *std::partition_point(__first, __last, __a_precedes);
 
@@ -331,7 +391,7 @@ struct __batched_merge_sort_kernel
         // A is never empty, so both clamped positions are valid elements of the segment. A head read from a clamped
         // position belongs to an exhausted run and is never taken.
         auto __load_head = [&](std::uint32_t __pos, std::uint32_t __last) {
-            return __m_slm_keys[std::min(__pos, __last - 1)];
+            return __slm_key(std::min(__pos, __last - 1));
         };
 
         // The heads of A and B are kept in registers with their ranks, so each output reads one key from SLM: the
@@ -349,7 +409,7 @@ struct __batched_merge_sort_kernel
                 const bool __take_a = __ia < __a_last && (__ib >= __b_last || !(__b_rank < __a_rank));
                 __keys[__s] = __take_a ? __a : __b;
                 if constexpr (__has_values)
-                    __vals[__s] = __m_slm_vals[__take_a ? __ia : __ib];
+                    __vals[__s] = __slm_val(__take_a ? __ia : __ib);
                 __ia += __take_a;
                 __ib += !__take_a;
                 if (__s + 1 < __data_per_work_item)
@@ -403,10 +463,12 @@ struct __batched_merge_sort_submitter<__is_ascending, __data_per_work_item, __wo
             {
                 oneapi::dpl::__ranges::__require_access(__cgh, __in_pack.__vals_rng(), __out_pack.__vals_rng());
             }
-            typename _KernelType::_KeysSlmAcc __slm_keys(__slm_count, __cgh);
+            using _KeysSwizzle = __slm_swizzle<typename _KernelType::_Bits, __data_per_work_item>;
+            using _ValsSwizzle = __slm_swizzle<_ValStorageT, __data_per_work_item>;
+            typename _KernelType::_KeysSlmAcc __slm_keys(_KeysSwizzle::__alloc_count(__slm_count), __cgh);
             auto __slm_vals = [&]() {
                 if constexpr (__has_values)
-                    return sycl::local_accessor<_ValStorageT, 1>(__slm_count, __cgh);
+                    return sycl::local_accessor<_ValStorageT, 1>(_ValsSwizzle::__alloc_count(__slm_count), __cgh);
                 else
                     return __no_values{};
             }();
