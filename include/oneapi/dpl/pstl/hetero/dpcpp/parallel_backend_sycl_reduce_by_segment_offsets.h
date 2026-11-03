@@ -11,6 +11,7 @@
 #define _ONEDPL_PARALLEL_BACKEND_SYCL_REDUCE_BY_SEGMENT_OFFSETS_H
 
 #include <algorithm>   // std::min, std::max, std::clamp
+#include <cassert>     // assert
 #include <cmath>       // std::sqrt
 #include <cstddef>     // std::size_t
 #include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t, std::uintptr_t
@@ -1290,6 +1291,9 @@ struct __parallel_reduce_by_segment_offsets
                _OutRange&& __result, const _Size __n, const _Size __m, _InitType __init,
                _BinaryOperation __binary_op) const
     {
+        // __pattern_reduce_by_segment_offsets returns for no segments and fills the results of an empty input
+        assert(__n > 0 && __m > 0);
+
         sycl::queue __q = __exec.queue();
         const bool __is_gpu = __q.get_device().is_gpu();
 
