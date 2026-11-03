@@ -98,7 +98,7 @@ class __segmented_reduce_fill_wrapper;
 
 // A short segment is reduced by one work-item. A long segment is split into chunks, each reduced by one work-item, and
 // the partial results of the segment are combined by one work-item. The values below were measured on GPUs and CPUs
-// as SYCL devices; the parallel host policies have their own values in reduce_by_segment_impl.h:
+// as SYCL devices:
 // - a segment up to this length is short;
 inline constexpr std::size_t __segmented_reduce_gpu_short_segment_max = 512;
 inline constexpr std::size_t __segmented_reduce_cpu_short_segment_max = 32768;
