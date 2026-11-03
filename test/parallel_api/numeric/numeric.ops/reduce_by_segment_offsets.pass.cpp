@@ -449,15 +449,26 @@ test_boundaries()
     }
 }
 
-// Segments at the boundaries of the pieces of the input that a sub-group takes on GPUs (512 elements, 16 per
-// work-item): many tiny and empty ones per work-item, ones ending exactly at the end of a work-item and of a piece, a
-// segment of a million elements, empty segments between, one crossing several pieces up to the end of a piece, the
-// first offset above zero and the last one below the end of the input
+// Segments at the boundaries of the pieces of the input that a sub-group takes on GPUs: many tiny and empty ones per
+// work-item, ones ending exactly at the end of a work-item and of a piece, a segment of a million elements, empty
+// segments between, one crossing several pieces up to the end of a piece, the first offset above zero and the last one
+// below the end of the input. The size of the input and the number of segments are fixed first, so that the elements
+// of a work-item and of a piece are those the device implementation picks for them on the device of the test policy
 template <std::size_t CallNumber>
 void
 test_pieces()
 {
-    const std::int64_t lane = 16, piece = 512;
+    const std::int64_t n = 1016000;     // above the last offset for any piece of up to 2048 elements, below 2^20
+    const std::int64_t num_segments = 3108; // 3000 + 7 + 1 + 100 below
+
+    std::int64_t lane = 16, piece = 512; // the elements of a work-item and of a piece of a sub-group of 32 work-items
+#if TEST_DPCPP_BACKEND_PRESENT
+    const auto geometry = oneapi::dpl::__par_backend_hetero::__segmented_reduce_flat_tuning::__geometry(
+        TestUtils::get_dpcpp_test_policy().queue(), std::size_t(n), std::size_t(num_segments));
+    lane = std::int64_t(geometry.__inputs_per_item);
+    piece = lane * std::int64_t(oneapi::dpl::__par_backend_hetero::__segmented_reduce_flat_tuning::__sub_group_size);
+#endif
+
     std::vector<std::int64_t> offsets{37};
     auto add = [&offsets](std::int64_t length) { offsets.push_back(offsets.back() + length); };
     auto add_tiny = [&add](std::int64_t count) {
@@ -474,8 +485,10 @@ test_pieces()
     add(7);
     add(3 * piece + piece - offsets.back() % piece);
     add_tiny(100);
-    const std::int64_t num_segments = std::int64_t(offsets.size() - 1);
-    Sequence<int> in(offsets.back() + 1000, [](std::size_t i) { return int(i % 101) - 50; });
+    EXPECT_EQ(num_segments, std::int64_t(offsets.size() - 1), "wrong number of segments in test_pieces");
+    EXPECT_TRUE(offsets.back() < n, "the last offset of test_pieces is not below the end of the input");
+
+    Sequence<int> in(n, [](std::size_t i) { return int(i % 101) - 50; });
     Sequence<std::int64_t> out(num_segments, [](std::size_t) { return -1; });
     invoke_on_all_policies<CallNumber>()(test_reduce_by_segment_offsets(), in.begin(), in.end(), out.begin(),
                                          out.end(), offsets.begin(), num_segments, std::int64_t{5},
