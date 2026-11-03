@@ -1176,6 +1176,8 @@ template <typename _Acc, typename... _Name, typename _InitType, typename _Binary
 struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_name<_Name...>, _InitType,
                                           _BinaryOperation, _Tuning>
 {
+    static_assert(std::is_arithmetic_v<_Acc>, "the work-group per segment path takes arithmetic accumulators only");
+
     _InitType __init;
     mutable _BinaryOperation __binary_op;
 
@@ -1191,7 +1193,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
 
         sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
-            __dpl_sycl::__local_accessor<_Acc> __partials(sycl::range<1>(__sub_groups), __cgh);
+            __dpl_sycl::__local_accessor<_Acc> __slm_partials(sycl::range<1>(__sub_groups), __cgh);
 
             __cgh.parallel_for<_Name...>(
                 sycl::nd_range<1>(sycl::range<1>(std::size_t(__m) * __work_group_size),
@@ -1236,14 +1238,14 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                     if (__active_sub_groups > 1)
                     {
                         if (__active > 0 && __sg.get_local_linear_id() == 0)
-                            __partials[__sg_id] = __acc;
+                            __slm_partials[__sg_id] = __acc;
 
                         sycl::group_barrier(__item.get_group());
 
                         if (__sg_id == 0)
                         {
                             const std::uint32_t __lane = __sg.get_local_linear_id();
-                            __acc = __reduce_lanes(__sg, __partials[__lane < __active_sub_groups ? __lane : 0],
+                            __acc = __reduce_lanes(__sg, __slm_partials[__lane < __active_sub_groups ? __lane : 0],
                                                    __active_sub_groups);
                         }
                     }
@@ -1353,6 +1355,7 @@ struct __parallel_reduce_by_segment_offsets
             if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__lanes))
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
+
                 if (_GroupTuning::__applies(std::size_t(__n), std::size_t(__m)))
                     __reduce_by_groups<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
                 else
