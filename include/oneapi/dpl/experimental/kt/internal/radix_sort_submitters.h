@@ -10,6 +10,7 @@
 #ifndef _ONEDPL_KT_RADIX_SORT_SUBMITTERS_H
 #define _ONEDPL_KT_RADIX_SORT_SUBMITTERS_H
 
+#include <cassert>
 #include <cstdint>
 #include <utility>
 #include <type_traits>
@@ -71,12 +72,13 @@ template <bool __is_ascending, std::uint8_t __radix_bits, std::uint32_t __hist_w
 struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_work_group_count, __hist_work_group_size,
                                         oneapi::dpl::__par_backend_hetero::__internal::__optional_kernel_name<_Name...>>
 {
-    // ESIMD version of histogram does not support multiple segments, it ignores the segment argument
+    // ESIMD version of histogram does not support multiple segments
     template <typename _KeysRng>
     sycl::event
     operator()(__esimd_tag, sycl::queue& __q, const _KeysRng& __keys_rng, __onesweep_hist_t* __global_offset_data,
-               std::size_t __n, const __onesweep_segments&, const sycl::event& __e) const
+               std::size_t __n, [[maybe_unused]] const __onesweep_segments& __segments, const sycl::event& __e) const
     {
+        assert(__segments.__segment_count == 1 && "The ESIMD radix sort does not support multiple segments");
         sycl::nd_range<1> __nd_range(__hist_work_group_count * __hist_work_group_size, __hist_work_group_size);
         return __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __keys_rng);
@@ -189,11 +191,13 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
     template <typename _InRngPack, typename _OutRngPack>
     sycl::event
     operator()(__esimd_tag, sycl::queue& __q, _InRngPack&& __in_pack, _OutRngPack&& __out_pack,
-               __onesweep_hist_t* __p_global_hist, __onesweep_hist_t* __p_group_hists,
-               std::uint32_t __sweep_work_group_count, std::size_t __n, std::uint32_t __stage,
-               const __onesweep_segments&, const sycl::event& __e) const
+               __onesweep_hist_t* __p_global_hist, __onesweep_hist_t* __p_group_hists, std::uint32_t __sweep_tile_count,
+               std::size_t __n, std::uint32_t __stage, [[maybe_unused]] const __onesweep_segments& __segments,
+               const sycl::event& __e) const
     {
-        sycl::nd_range<1> __nd_range(__sweep_work_group_count * __work_group_size, __work_group_size);
+        // ESIMD version of onesweep does not support multiple segments
+        assert(__segments.__segment_count == 1 && "The ESIMD radix sort does not support multiple segments");
+        sycl::nd_range<1> __nd_range(__sweep_tile_count * __work_group_size, __work_group_size);
         return __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __in_pack.__keys_rng(), __out_pack.__keys_rng());
             if constexpr (std::decay_t<_InRngPack>::__has_values)
@@ -213,9 +217,8 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
     template <typename _InRngPack, typename _OutRngPack>
     sycl::event
     operator()(__sycl_tag, sycl::queue& __q, _InRngPack&& __in_pack, _OutRngPack&& __out_pack,
-               __onesweep_hist_t* __p_global_hist, __onesweep_hist_t* __p_group_hists,
-               std::uint32_t __sweep_work_group_count, std::size_t, std::uint32_t __stage,
-               const __onesweep_segments& __segments, const sycl::event& __e) const
+               __onesweep_hist_t* __p_global_hist, __onesweep_hist_t* __p_group_hists, std::uint32_t __sweep_tile_count,
+               std::size_t, std::uint32_t __stage, const __onesweep_segments& __segments, const sycl::event& __e) const
     {
         using _KernelType =
             __radix_sort_onesweep_kernel<__sycl_tag, __is_ascending, __radix_bits, __data_per_work_item,
@@ -230,7 +233,7 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
             sycl::get_kernel_bundle<sycl::bundle_state::executable>(__q.get_context(), {__q.get_device()}, {__kid});
         sycl::kernel __kernel = __bundle.get_kernel<_KernelName>();
         std::uint32_t __num_wgs =
-            __get_num_cooperative_groups(__kernel, __q, __work_group_size, __sweep_work_group_count, __slm_size_bytes);
+            __get_num_cooperative_groups(__kernel, __q, __work_group_size, __sweep_tile_count, __slm_size_bytes);
 
         sycl::nd_range<1> __nd_range(__num_wgs * __work_group_size, __work_group_size);
         return __q.submit([&](sycl::handler& __cgh) {
@@ -243,8 +246,7 @@ struct __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_
             }
             __cgh.depends_on(__e);
             _KernelType __kernel(__stage, __p_global_hist, __p_group_hists, std::forward<_InRngPack>(__in_pack),
-                                 std::forward<_OutRngPack>(__out_pack), __slm_accessor, __sweep_work_group_count,
-                                 __segments);
+                                 std::forward<_OutRngPack>(__out_pack), __slm_accessor, __sweep_tile_count, __segments);
             __cgh.parallel_for<_KernelName>(__nd_range, __kernel);
         });
     }
