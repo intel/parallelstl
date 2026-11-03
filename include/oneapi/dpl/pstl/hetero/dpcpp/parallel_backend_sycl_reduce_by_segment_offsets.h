@@ -311,7 +311,7 @@ struct __segmented_reduce_flat_tuning
     // elements of a work-item are chosen so that the pieces about fill the hardware threads of the device
     static constexpr std::size_t __short_average_segment = 2048;
 
-    static constexpr std::size_t __max_work_group = 256;
+    static constexpr std::size_t __work_group_size_limit = 256;
     static constexpr std::size_t __tail_work_group = 256;
 
     // Eight compute units per Xe core and eight hardware threads per compute unit, a sub-group each
@@ -404,8 +404,8 @@ struct __segmented_reduce_flat_tuning
     static __segmented_reduce_flat_geometry
     __geometry_of(const sycl::queue& __q, const std::size_t __n)
     {
-        std::size_t __work_group_size =
-            oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) / __sub_group_size * __sub_group_size;
+        std::size_t __work_group_size = oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
+                                        __sub_group_size * __sub_group_size;
         const std::size_t __compute_units = oneapi::dpl::__internal::__max_compute_units(__q);
         const std::size_t __min_groups = 2 * std::max<std::size_t>(1, __compute_units / __compute_units_per_core);
         const std::size_t __items = _Band::__items(__compute_units, __min_groups, __work_group_size);
@@ -1138,7 +1138,7 @@ struct __segmented_reduce_flat_submitter<
 struct __segmented_reduce_group_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
-    static constexpr std::size_t __max_work_group = 256;
+    static constexpr std::size_t __work_group_size_limit = 256;
 
     // Up to this many elements and segments the work-groups, a segment each, cost less than the second kernel of the
     // flat path whatever the lengths of the segments; above it a few long segments leave most of the device idle, as
@@ -1157,7 +1157,7 @@ struct __segmented_reduce_group_tuning
     __work_group_size(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
         const std::size_t __max_size =
-            std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) /
+            std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
                                            __sub_group_size * __sub_group_size);
         const std::size_t __average = oneapi::dpl::__internal::__dpl_ceiling_div(__n, __m);
 
