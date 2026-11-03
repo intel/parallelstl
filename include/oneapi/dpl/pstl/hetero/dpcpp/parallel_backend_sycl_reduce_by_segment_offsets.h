@@ -1199,7 +1199,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
 
         sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
-            __dpl_sycl::__local_accessor<_Acc> __slm_partials(sycl::range<1>(__sub_groups), __cgh);
+            __dpl_sycl::__local_accessor<_Acc> __loc_partials_acc(sycl::range<1>(__sub_groups), __cgh);
 
             __cgh.parallel_for<_Name...>(
                 sycl::nd_range<1>(sycl::range<1>(std::size_t(__m) * __work_group_size),
@@ -1245,14 +1245,14 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                     if (__active_sub_groups > 1)
                     {
                         if (__active > 0 && __sg.get_local_linear_id() == 0)
-                            __slm_partials[__sg_id] = __acc;
+                            __loc_partials_acc[__sg_id] = __acc;
 
                         sycl::group_barrier(__item.get_group());
 
                         if (__sg_id == 0)
                         {
                             const std::uint32_t __lane = __sg.get_local_linear_id();
-                            __acc = __reduce_lanes(__sg, __slm_partials[__lane < __active_sub_groups ? __lane : 0],
+                            __acc = __reduce_lanes(__sg, __loc_partials_acc[__lane < __active_sub_groups ? __lane : 0],
                                                    __active_sub_groups);
                         }
                     }
