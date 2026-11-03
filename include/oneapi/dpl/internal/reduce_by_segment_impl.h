@@ -251,13 +251,13 @@ inline constexpr std::size_t __segmented_reduce_host_cut_off = std::size_t(1) <<
 // The parallel host policies reduce a short segment in one task, and split a longer one into chunks reduced in
 // parallel, which balances the load when a few segments hold most of the input.
 // - a segment up to this length is short;
-inline constexpr std::size_t __segmented_reduce_host_threshold = 32768;
+inline constexpr std::size_t __segmented_reduce_host_short_segment_max = 32768;
 // - the length of a chunk of a long segment.
 inline constexpr std::size_t __segmented_reduce_host_chunk_size = 16384;
 // A chunk after the first one of a segment starts from the operation on its first two elements, and a long segment
 // has at least one such chunk besides the first one.
 static_assert(__segmented_reduce_host_chunk_size >= 2);
-static_assert(__segmented_reduce_host_threshold >= __segmented_reduce_host_chunk_size);
+static_assert(__segmented_reduce_host_short_segment_max >= __segmented_reduce_host_chunk_size);
 
 template <typename _IsVector, typename _ExecutionPolicy, typename _RandomAccessInputIt, typename _SegmentNum,
           typename _RandomAccessOffsetIt, typename _RandomAccessOutputIt, typename _InitType, typename _BinaryOperation>
@@ -283,7 +283,7 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
                                                        __offsets, __init, __binary_op, _IsVector{});
 
     const _Size __m = __num_segments;
-    const _Size __threshold = __segmented_reduce_host_threshold;
+    const _Size __threshold = __segmented_reduce_host_short_segment_max;
     const _Size __chunk_size = __segmented_reduce_host_chunk_size;
     auto __bounds = [__offsets, __n](_Size __segment) {
         return std::make_pair(__internal::__segmented_reduce_clamp_offset(__offsets[__segment], __n),

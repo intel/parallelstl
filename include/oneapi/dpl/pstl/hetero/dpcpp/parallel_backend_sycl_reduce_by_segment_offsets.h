@@ -99,8 +99,8 @@ class __segmented_reduce_fill_wrapper;
 // A short segment is reduced by one work-item. A long segment is split into chunks, each reduced by one work-item, and
 // the partial results of the segment are combined by one work-item. The values below were measured on GPUs and CPUs:
 // - a segment up to this length is short;
-inline constexpr std::size_t __segmented_reduce_gpu_threshold = 512;
-inline constexpr std::size_t __segmented_reduce_cpu_threshold = 32768;
+inline constexpr std::size_t __segmented_reduce_gpu_short_segment_max = 512;
+inline constexpr std::size_t __segmented_reduce_cpu_short_segment_max = 32768;
 // - on GPUs the best chunk length is close to the square root of the longest segment, which balances the serial work
 //   of the two levels; on CPUs the chunk length hardly matters above 1024.
 inline constexpr std::size_t __segmented_reduce_cpu_chunk_size = 4096;
@@ -276,7 +276,7 @@ __parallel_reduce_by_segment_offsets(_BackendTag, _ExecutionPolicy&& __exec, _In
                                      _InitType __init, _BinaryOperation __binary_op)
 {
     const bool __is_gpu = __exec.queue().get_device().is_gpu();
-    const _Size __threshold = __is_gpu ? __segmented_reduce_gpu_threshold : __segmented_reduce_cpu_threshold;
+    const _Size __threshold = __is_gpu ? __segmented_reduce_gpu_short_segment_max : __segmented_reduce_cpu_short_segment_max;
 
     // Reduces the segments longer than __min_length in chunks; __max_segments bounds the number of such segments
     auto __reduce_in_chunks = [&](_Size __min_length, bool __write_empty, _Size __max_length, _Size __max_segments) {
