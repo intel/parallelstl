@@ -246,7 +246,7 @@ __reduce_by_segment_offsets_impl(__internal::__serial_tag<_IsVector>, _Policy&&,
 
 // The parallel host policies reduce a small input in the calling thread, as the serial policies do, vectorized when
 // the tag asks for vectorization: below this many elements the tasks cost more than they save.
-inline constexpr std::size_t __segmented_reduce_host_serial_limit = std::size_t(1) << 20;
+inline constexpr std::size_t __segmented_reduce_host_cut_off = std::size_t(1) << 20;
 
 // The parallel host policies reduce a short segment in one task, and split a longer one into chunks reduced in
 // parallel, which balances the load when a few segments hold most of the input.
@@ -278,7 +278,7 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
         return __result_value;
 
     const _Size __n = __last_value - __first_value;
-    if (std::size_t(__n) < __segmented_reduce_host_serial_limit)
+    if (std::size_t(__n) < __segmented_reduce_host_cut_off)
         return __brick_reduce_by_segment_offsets<_Acc>(__first_value, __last_value, __result_value, __num_segments,
                                                        __offsets, __init, __binary_op, _IsVector{});
 
