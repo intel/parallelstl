@@ -312,7 +312,7 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __short_average_segment = 2048;
 
     static constexpr std::size_t __work_group_size_limit = 256;
-    static constexpr std::size_t __tail_work_group = 256;
+    static constexpr std::size_t __tail_work_group_size = 256;
 
     // Eight compute units per Xe core and eight hardware threads per compute unit, a sub-group each
     static constexpr std::size_t __compute_units_per_core = 8;
@@ -561,7 +561,7 @@ struct __segmented_reduce_flat_submitter<
         // a single unit has none
         if (__num_units > 1)
         {
-            constexpr std::size_t __tail_work_group_size = _Tuning::__tail_work_group;
+            constexpr std::size_t __tail_work_group_size = _Tuning::__tail_work_group_size;
             constexpr std::size_t __tail_sub_groups = __tail_work_group_size / __sub_group_size;
             const std::size_t __tail_groups =
                 oneapi::dpl::__internal::__dpl_ceiling_div(__num_units, __tail_sub_groups);
