@@ -442,13 +442,13 @@ struct __segmented_reduce_flat_local
 template <typename _Acc, typename _Size>
 struct __segmented_reduce_flat_local<true, _Acc, _Size>
 {
-    __dpl_sycl::__local_accessor<_Acc> __acc;
-    __dpl_sycl::__local_accessor<_Size> __segments;
-    __dpl_sycl::__local_accessor<std::uint8_t> __states;
+    __dpl_sycl::__local_accessor<_Acc> __slm_acc;
+    __dpl_sycl::__local_accessor<_Size> __slm_segments;
+    __dpl_sycl::__local_accessor<std::uint8_t> __slm_states;
 
     __segmented_reduce_flat_local(sycl::handler& __cgh, std::size_t __sub_groups)
-        : __acc(sycl::range<1>(2 * __sub_groups), __cgh), __segments(sycl::range<1>(__sub_groups), __cgh),
-          __states(sycl::range<1>(__sub_groups), __cgh)
+        : __slm_acc(sycl::range<1>(2 * __sub_groups), __cgh), __slm_segments(sycl::range<1>(__sub_groups), __cgh),
+          __slm_states(sycl::range<1>(__sub_groups), __cgh)
     {
     }
 };
@@ -1035,11 +1035,11 @@ struct __segmented_reduce_flat_submitter<
         if (__lane == 0)
         {
             if (__parts.__head_state != 0)
-                __local.__acc[__sg_id] = __parts.__head.__v;
+                __local.__slm_acc[__sg_id] = __parts.__head.__v;
             if (__parts.__tail_segment < __m)
-                __local.__acc[__sub_groups + __sg_id] = __parts.__tail.__v;
-            __local.__segments[__sg_id] = __parts.__tail_segment;
-            __local.__states[__sg_id] = __parts.__head_state;
+                __local.__slm_acc[__sub_groups + __sg_id] = __parts.__tail.__v;
+            __local.__slm_segments[__sg_id] = __parts.__tail_segment;
+            __local.__slm_states[__sg_id] = __parts.__head_state;
         }
 
         // No tail unless found below; the barrier orders this before the writes after it
@@ -1050,16 +1050,16 @@ struct __segmented_reduce_flat_submitter<
         if (__sg_id != 0 || __lane >= __sub_groups)
             return;
 
-        const _Size __s = __local.__segments[__lane];
+        const _Size __s = __local.__slm_segments[__lane];
         if (__s < __m)
         {
-            _Acc __acc = __local.__acc[__sub_groups + __lane];
+            _Acc __acc = __local.__slm_acc[__sub_groups + __lane];
             std::uint8_t __state = 2;
             for (std::size_t __k = __lane + 1; __state == 2 && __k < __sub_groups; ++__k)
             {
-                __state = __local.__states[__k];
+                __state = __local.__slm_states[__k];
                 if (__state != 0)
-                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__acc[__k]));
+                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__slm_acc[__k]));
             }
             if (__state == 1)
                 __result[__s] = __acc;
@@ -1070,15 +1070,15 @@ struct __segmented_reduce_flat_submitter<
             }
         }
 
-        if (__lane == 0 && __local.__states[0] != 0)
+        if (__lane == 0 && __local.__slm_states[0] != 0)
         {
-            _Acc __acc = __local.__acc[0];
-            std::uint8_t __state = __local.__states[0];
+            _Acc __acc = __local.__slm_acc[0];
+            std::uint8_t __state = __local.__slm_states[0];
             for (std::size_t __k = 1; __state == 2 && __k < __sub_groups; ++__k)
             {
-                __state = __local.__states[__k];
+                __state = __local.__slm_states[__k];
                 if (__state != 0)
-                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__acc[__k]));
+                    __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __acc, __local.__slm_acc[__k]));
             }
             __heads[__group] = __acc;
         }
@@ -1129,6 +1129,173 @@ struct __segmented_reduce_flat_submitter<
     }
 };
 
+// On GPUs, for arithmetic types and a small input: one kernel with a work-group per segment. An empty segment, also
+// one out of the input or with reversed offsets, gets the initial value; in any other one every work-item reduces the
+// elements of the segment a work-group apart, every sub-group combines its work-items, and the first sub-group
+// combines the results of the sub-groups from the local memory. The tuning of the path, measured on GPUs.
+struct __segmented_reduce_group_tuning
+{
+    static constexpr std::size_t __lanes = 32;
+    static constexpr std::size_t __max_work_group = 256;
+
+    // Up to this many elements and segments the work-groups, a segment each, cost less than the second kernel of the
+    // flat path whatever the lengths of the segments; above it a few long segments leave most of the device idle, as
+    // a work-group reduces each. The positions within a segment fit in 32 bits.
+    static constexpr std::size_t __max_input = std::size_t(1) << 12;
+    static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
+
+    static bool
+    __applies(const std::size_t __n, const std::size_t __m)
+    {
+        return __n <= __max_input && __m <= __max_input;
+    }
+
+    // A power of two sub-groups about as many work-items as the average segment has elements, within the bounds
+    static std::size_t
+    __work_group_size(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
+    {
+        const std::size_t __max_size = std::max(
+            __lanes, oneapi::dpl::__internal::__max_work_group_size(__q, __max_work_group) / __lanes * __lanes);
+        const std::size_t __average = oneapi::dpl::__internal::__dpl_ceiling_div(__n, __m);
+
+        std::size_t __size = __lanes;
+        while (__size < __average && __size < __max_size)
+            __size *= 2;
+
+        return std::min(__size, __max_size);
+    }
+};
+
+template <typename... _Name>
+class __segmented_reduce_group_kernel;
+
+template <typename _Acc, typename _KernelName, typename _InitType, typename _BinaryOperation, typename _Tuning>
+struct __segmented_reduce_group_submitter;
+
+template <typename _Acc, typename... _Name, typename _InitType, typename _BinaryOperation, typename _Tuning>
+struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_name<_Name...>, _InitType,
+                                          _BinaryOperation, _Tuning>
+{
+    static_assert(std::is_arithmetic_v<_Acc>, "the work-group per segment path takes arithmetic accumulators only");
+
+    _InitType __init;
+    mutable _BinaryOperation __binary_op;
+
+    template <typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
+    void
+    operator()(sycl::queue& __q, _InRange&& __input, _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n,
+               const _Size __m) const
+    {
+        constexpr std::uint32_t __lanes = _Tuning::__lanes;
+        const std::uint32_t __work_group_size = _Tuning::__work_group_size(__q, std::size_t(__n), std::size_t(__m));
+        const std::uint32_t __sub_groups = __work_group_size / __lanes;
+        const _Acc __init_acc = __segmented_reduce_to_acc<_Acc>(__init);
+
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
+            oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
+            __dpl_sycl::__local_accessor<_Acc> __slm_partials(sycl::range<1>(__sub_groups), __cgh);
+
+            __cgh.parallel_for<_Name...>(
+                sycl::nd_range<1>(sycl::range<1>(std::size_t(__m) * __work_group_size),
+                                  sycl::range<1>(__work_group_size)),
+                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__lanes)]] {
+                    const std::uint32_t __segment = __item.get_group(0);
+                    const std::uint32_t __lid = __item.get_local_id(0);
+                    const _Size __begin =
+                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__segment], __n);
+                    const _Size __end =
+                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__segment + 1], __n);
+
+                    // The same for the whole work-group, which so leaves before any barrier
+                    if (__begin >= __end)
+                    {
+                        if (__lid == 0)
+                            __result[__segment] = __init_acc;
+                        return;
+                    }
+
+                    // The first work-item starts from the operation on the initial value and the first element; a
+                    // work-item past the length of the segment starts from its first element, which the combinations
+                    // below skip
+                    const std::uint32_t __length = __end - __begin;
+                    const std::uint32_t __first = __lid < __length ? __lid : 0;
+                    _Acc __acc = __lid == 0 ? __segmented_reduce_to_acc<_Acc>(
+                                                  std::invoke(__binary_op, __init, __input[__begin]))
+                                            : __segmented_reduce_to_acc<_Acc>(__input[__begin + __first]);
+                    for (std::uint32_t __i = __lid + __work_group_size; __i < __length; __i += __work_group_size)
+                        __acc = std::invoke(__binary_op, __acc, __input[__begin + __i]);
+
+                    const auto __sg = __item.get_sub_group();
+                    const std::uint32_t __sg_id = __sg.get_group_linear_id();
+                    const std::uint32_t __items = std::min(__length, __work_group_size);
+                    const std::uint32_t __sg_first = __sg_id * __lanes;
+                    const std::uint32_t __active = __items > __sg_first ? std::min(__lanes, __items - __sg_first) : 0;
+                    __acc = __reduce_lanes(__sg, __acc, __active);
+
+                    // The same for the whole work-group, as the barrier needs
+                    const std::uint32_t __active_sub_groups =
+                        oneapi::dpl::__internal::__dpl_ceiling_div(__items, __lanes);
+                    if (__active_sub_groups > 1)
+                    {
+                        if (__active > 0 && __sg.get_local_linear_id() == 0)
+                            __slm_partials[__sg_id] = __acc;
+
+                        sycl::group_barrier(__item.get_group());
+
+                        if (__sg_id == 0)
+                        {
+                            const std::uint32_t __lane = __sg.get_local_linear_id();
+                            __acc = __reduce_lanes(__sg, __slm_partials[__lane < __active_sub_groups ? __lane : 0],
+                                                   __active_sub_groups);
+                        }
+                    }
+
+                    if (__lid == 0)
+                        __result[__segment] = __acc;
+                });
+        });
+
+        // Waited here, as the algorithm has no asynchronous interface
+        __event.wait_and_throw();
+    }
+
+  private:
+    // Combines the accumulators of the first __active lanes of a sub-group on lane 0: by the sub-group reduction for an
+    // operation with an identity the group algorithms know, the other lanes giving it; else by a tree of shifts known
+    // at compile time
+    template <typename _SubGroup>
+    _Acc
+    __reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active) const
+    {
+        const std::uint32_t __lane = __sg.get_local_linear_id();
+
+        if constexpr (oneapi::dpl::unseq_backend::__can_use_group_reduce_scan<_BinaryOperation, _Acc>::value)
+        {
+            return __dpl_sycl::__reduce_over_group(
+                __sg, __lane < __active ? __acc : sycl::known_identity_v<_BinaryOperation, _Acc>, __binary_op);
+        }
+        else
+        {
+            auto __step = [&](auto __shift) {
+                if (__shift < __active)
+                {
+                    const _Acc __other = sycl::shift_group_left(__sg, __acc, __shift);
+                    if (__lane + __shift < __active)
+                        __acc = std::invoke(__binary_op, __acc, __other);
+                }
+            };
+
+            __step(std::integral_constant<std::uint32_t, 1>{});
+            __step(std::integral_constant<std::uint32_t, 2>{});
+            __step(std::integral_constant<std::uint32_t, 4>{});
+            __step(std::integral_constant<std::uint32_t, 8>{});
+            __step(std::integral_constant<std::uint32_t, 16>{});
+
+            return __acc;
+        }
+    }
+};
+
 // Whether a temporary storage is a SYCL buffer, whose accessors order the kernels that write and read it
 template <typename _Storage>
 struct __segmented_reduce_is_buffer : std::false_type
@@ -1168,7 +1335,8 @@ __parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec
 
 // The segments of the input [0, __n) defined by the __m + 1 offsets, reduced into the __m results
 template <typename _Acc, typename _ChunkTuning = __segmented_reduce_chunk_tuning,
-          typename _FlatTuning = __segmented_reduce_flat_tuning>
+          typename _FlatTuning = __segmented_reduce_flat_tuning,
+          typename _GroupTuning = __segmented_reduce_group_tuning>
 struct __parallel_reduce_by_segment_offsets
 {
     template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
@@ -1187,7 +1355,11 @@ struct __parallel_reduce_by_segment_offsets
             if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__lanes))
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
-                __reduce_flat<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
+
+                if (_GroupTuning::__applies(std::size_t(__n), std::size_t(__m)))
+                    __reduce_by_groups<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
+                else
+                    __reduce_flat<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
                 return;
             }
         }
@@ -1225,6 +1397,20 @@ struct __parallel_reduce_by_segment_offsets
                                                                  _InitType, _BinaryOperation, _FlatTuning>;
 
         _FlatSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
+    }
+
+    // On GPUs arithmetic types of a small input by a work-group per segment
+    template <typename _CustomName, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size,
+              typename _InitType, typename _BinaryOperation>
+    static void
+    __reduce_by_groups(sycl::queue& __q, _InRange& __input, _OffsetRange& __offsets, _OutRange& __result,
+                       const _Size __n, const _Size __m, const _InitType& __init, const _BinaryOperation& __binary_op)
+    {
+        using _GroupKernel = __internal::__kernel_name_provider<__segmented_reduce_group_kernel<_CustomName>>;
+        using _GroupSubmitter =
+            __segmented_reduce_group_submitter<_Acc, _GroupKernel, _InitType, _BinaryOperation, _GroupTuning>;
+
+        _GroupSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
     }
 
     // The length of the longest segment on GPUs, where it selects the chunk length; __n on CPUs, where it does not
