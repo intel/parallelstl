@@ -443,12 +443,13 @@ template <typename _Acc, typename _Size>
 struct __segmented_reduce_flat_local<true, _Acc, _Size>
 {
     __dpl_sycl::__local_accessor<_Acc> __loc_heads_tails_acc;
-    __dpl_sycl::__local_accessor<_Size> __slm_segments;
+    __dpl_sycl::__local_accessor<_Size> __loc_tail_segments_acc;
     __dpl_sycl::__local_accessor<std::uint8_t> __slm_states;
 
     __segmented_reduce_flat_local(sycl::handler& __cgh, std::size_t __sub_groups)
         : __loc_heads_tails_acc(sycl::range<1>(2 * __sub_groups), __cgh),
-          __slm_segments(sycl::range<1>(__sub_groups), __cgh), __slm_states(sycl::range<1>(__sub_groups), __cgh)
+          __loc_tail_segments_acc(sycl::range<1>(__sub_groups), __cgh),
+          __slm_states(sycl::range<1>(__sub_groups), __cgh)
     {
     }
 };
@@ -1039,7 +1040,7 @@ struct __segmented_reduce_flat_submitter<
                 __local.__loc_heads_tails_acc[__sg_id] = __parts.__head.__v;
             if (__parts.__tail_segment < __m)
                 __local.__loc_heads_tails_acc[__sub_groups + __sg_id] = __parts.__tail.__v;
-            __local.__slm_segments[__sg_id] = __parts.__tail_segment;
+            __local.__loc_tail_segments_acc[__sg_id] = __parts.__tail_segment;
             __local.__slm_states[__sg_id] = __parts.__head_state;
         }
 
@@ -1051,7 +1052,7 @@ struct __segmented_reduce_flat_submitter<
         if (__sg_id != 0 || __lane >= __sub_groups)
             return;
 
-        const _Size __s = __local.__slm_segments[__lane];
+        const _Size __s = __local.__loc_tail_segments_acc[__lane];
         if (__s < __m)
         {
             _Acc __acc = __local.__loc_heads_tails_acc[__sub_groups + __lane];
