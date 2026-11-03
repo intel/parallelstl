@@ -786,7 +786,9 @@ struct __segmented_reduce_flat_submitter<
                     __by_vectors = true;
                     __active = std::min<std::uint32_t>(__sub_group_size, __nv);
                     auto __load4 = [&](std::uint32_t __k) -> _Acc {
-                        const _V __v = *reinterpret_cast<const _V*>(__p + __a + __w * __k);
+                        _V __v;
+                        __v.load(0, sycl::address_space_cast<sycl::access::address_space::generic_space,
+                                                             sycl::access::decorated::no>(__p + __a + __w * __k));
                         if constexpr (__w == 2)
                             return __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, _T(__v[0]), _T(__v[1])));
                         else
