@@ -49,7 +49,7 @@
 #include <type_traits>
 #include <utility>
 #include <iterator> // std::distance
-#include <memory>   // std::destroy_n
+#include <memory>   // std::destroy_at
 
 #include "by_segment_extension_defs.h"
 #include "../pstl/segmented_reduce_utils.h"
@@ -387,8 +387,12 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
             {
                 const _Size __first_chunk = __k == 0 ? _Size{0} : __chunk_ends[__k - 1];
                 _Acc __acc = std::move(__partials[__first_chunk]);
+                std::destroy_at(__partials + __first_chunk);
                 for (_Size __chunk = __first_chunk + 1; __chunk < __chunk_ends[__k]; ++__chunk)
+                {
                     __acc = std::invoke(__binary_op, std::move(__acc), std::move(__partials[__chunk]));
+                    std::destroy_at(__partials + __chunk);
+                }
                 __result_value[__long[__k]] = std::move(__acc);
             }
         };
@@ -398,8 +402,6 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
             oneapi::dpl::__par_backend::__parallel_for(
                 __backend_tag{}, __exec, _Size{0}, __num_long, __combine,
                 std::size_t(std::max<_Size>(1, __threshold / (__num_chunks / __num_long))));
-
-        std::destroy_n(__partials, __num_chunks);
     });
 
     return __result_value + __m;
