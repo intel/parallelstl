@@ -74,10 +74,10 @@ constexpr std::size_t
 __batched_stable_sort_bytes_req(std::size_t __segment_size, std::size_t __total_size)
 {
     __check_batched_sort_config<_SortConfig, _KernelParam>();
-    if (__total_size == 0)
-        return 0;
     assert(__segment_size > 0 && "The segment size must be greater than zero");
     assert(__total_size % __segment_size == 0 && "The number of elements must be a multiple of the segment size");
+    if (__total_size == 0)
+        return 0;
     return __onesweep_temp_bytes<_KeyT, _ValT, _SortConfig::radix_bits, _KernelParam::data_per_workitem,
                                  _KernelParam::workgroup_size>(__total_size, __segment_size);
 }

@@ -237,13 +237,13 @@ struct __onesweep_layout
                      static_cast<std::uint32_t>(oneapi::dpl::__internal::__dpl_ceiling_div(
                          __segment_size, __work_group_size * __data_per_work_item))},
           __global_hist_item_count(std::size_t(__bin_count) * __stage_count * __segments.__segment_count),
-          __group_hist_item_count(std::size_t(__bin_count) * __stage_count * __sweep_work_group_count())
+          __group_hist_item_count(std::size_t(__bin_count) * __stage_count * __sweep_tile_count())
     {
     }
 
     // Tiles never straddle a segment boundary
     constexpr std::uint32_t
-    __sweep_work_group_count() const
+    __sweep_tile_count() const
     {
         return __segments.__segment_count * __segments.__tiles_per_segment;
     }
@@ -258,7 +258,7 @@ struct __onesweep_layout
     constexpr std::size_t
     __group_hist_stage_offset(std::uint32_t __stage) const
     {
-        return std::size_t(__sweep_work_group_count()) * __bin_count * __stage;
+        return std::size_t(__sweep_tile_count()) * __bin_count * __stage;
     }
 };
 
@@ -283,7 +283,7 @@ __onesweep_impl(_KtTag __kt_tag, sycl::queue __q, _RngPack1&& __input_pack, _Rng
     constexpr std::uint32_t __bin_count = _Layout::__bin_count;
     constexpr std::uint32_t __stage_count = _Layout::__stage_count;
     const __onesweep_segments& __segments = __layout.__segments;
-    const std::uint32_t __sweep_work_group_count = __layout.__sweep_work_group_count();
+    const std::uint32_t __sweep_tile_count = __layout.__sweep_tile_count();
 
     // TODO: check if it is more performant to fill it inside the histogram kernel
     // This line assumes that global and group histograms are stored sequentially
@@ -304,7 +304,7 @@ __onesweep_impl(_KtTag __kt_tag, sycl::queue __q, _RngPack1&& __input_pack, _Rng
     __event_chain = __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_work_item,
                                                     __work_group_size, _RadixSortSweepInitial>()(
         __kt_tag, __q, __input_pack, __virt_pack1, __mem_holder.__global_hist_ptr(), __mem_holder.__group_hist_ptr(),
-        __sweep_work_group_count, __n, 0, __segments, __event_chain);
+        __sweep_tile_count, __n, 0, __segments, __event_chain);
 
     for (::std::uint32_t __stage = 1; __stage < __stage_count; __stage++)
     {
@@ -317,15 +317,15 @@ __onesweep_impl(_KtTag __kt_tag, sycl::queue __q, _RngPack1&& __input_pack, _Rng
         {
             __event_chain = __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_work_item,
                                                             __work_group_size, _RadixSortSweepOdd>()(
-                __kt_tag, __q, __virt_pack1, __virt_pack2, __p_global_hist, __p_group_hists, __sweep_work_group_count,
-                __n, __stage, __segments, __event_chain);
+                __kt_tag, __q, __virt_pack1, __virt_pack2, __p_global_hist, __p_group_hists, __sweep_tile_count, __n,
+                __stage, __segments, __event_chain);
         }
         else
         {
             __event_chain = __radix_sort_onesweep_submitter<__is_ascending, __radix_bits, __data_per_work_item,
                                                             __work_group_size, _RadixSortSweepEven>()(
-                __kt_tag, __q, __virt_pack2, __virt_pack1, __p_global_hist, __p_group_hists, __sweep_work_group_count,
-                __n, __stage, __segments, __event_chain);
+                __kt_tag, __q, __virt_pack2, __virt_pack1, __p_global_hist, __p_group_hists, __sweep_tile_count, __n,
+                __stage, __segments, __event_chain);
         }
     }
 
