@@ -438,6 +438,42 @@ struct __segmented_reduce_flat_local<true, _Acc, _Size>
     }
 };
 
+// Combines the first __active lanes of a sub-group onto lane 0: sub-group reduce if the op has a known identity (others
+// give it), else a tree of compile-time shifts, as run-time shifts reach other lanes' registers indirectly
+template <typename _Acc, typename _SubGroup, typename _BinaryOperation>
+_Acc
+__segmented_reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active, _BinaryOperation __binary_op)
+{
+    const std::uint32_t __lane = __sg.get_local_linear_id();
+
+    if constexpr (oneapi::dpl::unseq_backend::__can_use_group_reduce_scan<_BinaryOperation, _Acc>::value)
+    {
+        return __dpl_sycl::__reduce_over_group(
+            __sg, __lane < __active ? __acc : sycl::known_identity_v<_BinaryOperation, _Acc>, __binary_op);
+    }
+    else
+    {
+        auto __step = [&](auto __shift) {
+            if (__shift < __active)
+            {
+                const _Acc __other = sycl::shift_group_left(__sg, __acc, __shift);
+                if (__lane + __shift < __active)
+                    __acc = std::invoke(__binary_op, __acc, __other);
+            }
+        };
+
+        // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
+
+        __step(std::integral_constant<std::uint32_t, 1>{});
+        __step(std::integral_constant<std::uint32_t, 2>{});
+        __step(std::integral_constant<std::uint32_t, 4>{});
+        __step(std::integral_constant<std::uint32_t, 8>{});
+        __step(std::integral_constant<std::uint32_t, 16>{});
+
+        return __acc;
+    }
+}
+
 template <typename _Acc, typename _KernelName, typename _GroupKernelName, typename _TailKernelName, typename _InitType,
           typename _BinaryOperation, typename _Tuning>
 struct __segmented_reduce_flat_submitter;
@@ -595,42 +631,6 @@ struct __segmented_reduce_flat_submitter<
     {
         return std::invoke(__binary_op, __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __a, __b)),
                            __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __c, __d)));
-    }
-
-    // Combines the first __active lanes onto lane 0: sub-group reduce if the op has a known identity (others give it),
-    // else a tree of compile-time shifts, as run-time shifts reach other lanes' registers indirectly
-    template <typename _SubGroup>
-    _Acc
-    __reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active) const
-    {
-        const std::uint32_t __lane = __sg.get_local_linear_id();
-
-        if constexpr (oneapi::dpl::unseq_backend::__can_use_group_reduce_scan<_BinaryOperation, _Acc>::value)
-        {
-            return __dpl_sycl::__reduce_over_group(
-                __sg, __lane < __active ? __acc : sycl::known_identity_v<_BinaryOperation, _Acc>, __binary_op);
-        }
-        else
-        {
-            auto __step = [&](auto __shift) {
-                if (__shift < __active)
-                {
-                    const _Acc __other = sycl::shift_group_left(__sg, __acc, __shift);
-                    if (__lane + __shift < __active)
-                        __acc = std::invoke(__binary_op, __acc, __other);
-                }
-            };
-
-            // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
-
-            __step(std::integral_constant<std::uint32_t, 1>{});
-            __step(std::integral_constant<std::uint32_t, 2>{});
-            __step(std::integral_constant<std::uint32_t, 4>{});
-            __step(std::integral_constant<std::uint32_t, 8>{});
-            __step(std::integral_constant<std::uint32_t, 16>{});
-
-            return __acc;
-        }
     }
 
     // Index of the last of __m segments beginning at or before __v, or -1, searched from __guess in [0, __m - 1]:
@@ -833,7 +833,7 @@ struct __segmented_reduce_flat_submitter<
         }
 
         if (__active > 0)
-            __acc.__v = __reduce_lanes(__sg, __acc.__v, __active);
+            __acc.__v = __segmented_reduce_lanes<_Acc>(__sg, __acc.__v, __active, __binary_op);
 
         // A range of one element more than the initial value takes it alone
         if (__is_first)
@@ -1099,7 +1099,8 @@ struct __segmented_reduce_flat_submitter<
                                                   __first_head[__k + 3 * __sub_group_size]));
         for (; __k < __heads_count; __k += __sub_group_size)
             __acc.__v = std::invoke(__binary_op, __acc.__v, __first_head[__k]);
-        __acc.__v = __reduce_lanes(__sg, __acc.__v, std::min<std::uint32_t>(__heads_count, __sub_group_size));
+        __acc.__v = __segmented_reduce_lanes<_Acc>(
+            __sg, __acc.__v, std::min<std::uint32_t>(__heads_count, __sub_group_size), __binary_op);
         if (__lane == 0)
             __result[__s] = __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __tail, __acc.__v));
     }
@@ -1205,7 +1206,7 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                     const std::uint32_t __sg_first = __sg_id * __sub_group_size;
                     const std::uint32_t __active =
                         __items > __sg_first ? std::min(__sub_group_size, __items - __sg_first) : 0;
-                    __acc = __reduce_lanes(__sg, __acc, __active);
+                    __acc = __segmented_reduce_lanes<_Acc>(__sg, __acc, __active, __binary_op);
 
                     // Uniform across the work-group, as the barrier needs
                     const std::uint32_t __active_sub_groups =
@@ -1221,8 +1222,9 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                         {
                             const std::uint32_t __lane = __sg.get_local_linear_id();
                             // Inactive lanes read slot 0 to stay in bounds; their values are not used
-                            __acc = __reduce_lanes(__sg, __loc_partials_acc[__lane < __active_sub_groups ? __lane : 0],
-                                                   __active_sub_groups);
+                            __acc = __segmented_reduce_lanes<_Acc>(
+                                __sg, __loc_partials_acc[__lane < __active_sub_groups ? __lane : 0],
+                                __active_sub_groups, __binary_op);
                         }
                     }
 
@@ -1233,43 +1235,6 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
 
         // Wait: the algorithm has no asynchronous interface
         __event.wait_and_throw();
-    }
-
-  private:
-    // Combines the first __active lanes onto lane 0: sub-group reduce if the op has a known identity (others give it),
-    // else a tree of compile-time shifts
-    template <typename _SubGroup>
-    _Acc
-    __reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active) const
-    {
-        const std::uint32_t __lane = __sg.get_local_linear_id();
-
-        if constexpr (oneapi::dpl::unseq_backend::__can_use_group_reduce_scan<_BinaryOperation, _Acc>::value)
-        {
-            return __dpl_sycl::__reduce_over_group(
-                __sg, __lane < __active ? __acc : sycl::known_identity_v<_BinaryOperation, _Acc>, __binary_op);
-        }
-        else
-        {
-            auto __step = [&](auto __shift) {
-                if (__shift < __active)
-                {
-                    const _Acc __other = sycl::shift_group_left(__sg, __acc, __shift);
-                    if (__lane + __shift < __active)
-                        __acc = std::invoke(__binary_op, __acc, __other);
-                }
-            };
-
-            // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
-
-            __step(std::integral_constant<std::uint32_t, 1>{});
-            __step(std::integral_constant<std::uint32_t, 2>{});
-            __step(std::integral_constant<std::uint32_t, 4>{});
-            __step(std::integral_constant<std::uint32_t, 8>{});
-            __step(std::integral_constant<std::uint32_t, 16>{});
-
-            return __acc;
-        }
     }
 };
 
