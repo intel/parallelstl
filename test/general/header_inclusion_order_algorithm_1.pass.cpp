@@ -18,8 +18,8 @@
 #include _PSTL_TEST_HEADER(algorithm)
 #include _PSTL_TEST_HEADER(execution)
 
-#include <functional>
-#include <type_traits>
+#include <functional>  // std::plus, std::equal_to
+#include <type_traits> // std::is_same_v
 
 // Check that oneDPL-specific numeric algorithms are still available in 'algorithm'
 using pint = int*;

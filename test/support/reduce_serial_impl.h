@@ -10,11 +10,11 @@
 #ifndef _REDUCE_SERIAL_IMPL_H
 #define _REDUCE_SERIAL_IMPL_H
 
-#include <algorithm>
-#include <cstdint>
-#include <iterator>
-#include <type_traits>
-#include <utility>
+#include <algorithm>   // std::max
+#include <cstdint>     // std::uint64_t
+#include <iterator>    // std::iterator_traits
+#include <type_traits> // std::decay_t, std::invoke_result_t, std::is_signed_v
+#include <utility>     // std::move, std::forward
 
 template <typename RandAccessItKeysIn, typename RandAccessItValsIn, typename RandAccessItKeysOut,
           typename RandAccessItValsOut, typename Size, typename BinaryPredicate, typename BinaryOperation>

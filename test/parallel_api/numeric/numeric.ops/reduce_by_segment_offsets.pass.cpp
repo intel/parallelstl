@@ -26,17 +26,17 @@
 #    include "support/utils_sycl.h"
 #endif
 
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <iterator>
-#include <limits>
-#include <numeric>
-#include <random>
-#include <tuple>
-#include <type_traits>
-#include <vector>
+#include <algorithm>   // std::copy_n, std::fill, std::min, std::max
+#include <cstddef>     // std::size_t, std::nullptr_t
+#include <cstdint>     // std::int16_t, std::int64_t, std::uint8_t, std::uint16_t, std::uint32_t, std::uint64_t
+#include <functional>  // std::plus, std::multiplies, std::bit_xor, std::logical_and
+#include <iterator>    // std::back_inserter, std::distance, std::iterator_traits, std::random_access_iterator_tag
+#include <limits>      // std::numeric_limits
+#include <numeric>     // std::iota
+#include <random>      // std::mt19937, std::uniform_int_distribution
+#include <tuple>       // std::tuple, std::get
+#include <type_traits> // std::enable_if_t, std::is_same_v, std::is_signed_v
+#include <vector>      // std::vector
 
 static_assert(ONEDPL_HAS_SEGMENTED_ALGORITHMS >= 202611L);
 

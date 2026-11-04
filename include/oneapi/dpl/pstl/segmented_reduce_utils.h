@@ -12,7 +12,7 @@
 
 #include <functional>  // std::invoke
 #include <iterator>    // std::iterator_traits
-#include <type_traits> // std::decay_t, std::invoke_result_t, std::common_type_t, std::make_unsigned_t
+#include <type_traits> // std::decay_t, std::invoke_result_t, std::common_type_t, std::make_unsigned_t, ...
 #include <utility>     // std::move
 
 #include "onedpl_config.h"
