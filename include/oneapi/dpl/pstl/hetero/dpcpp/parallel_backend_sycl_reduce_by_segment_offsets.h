@@ -46,7 +46,8 @@ __segmented_reduce_to_acc(_Value&& __value)
     return std::forward<_Value>(__value);
 }
 
-// One work-item per short segment; a long one only reports its capped length (only its sqrt matters) via atomic max
+// One work-item per short segment; a long one only reports its length via atomic max, capped to 32 bits: the chunk
+// length takes only its square root and clamps it far below
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_variable_brick
 {
@@ -395,8 +396,9 @@ struct __segmented_reduce_flat_tuning
     static __segmented_reduce_flat_geometry
     __geometry_of(const sycl::queue& __q, const std::size_t __n)
     {
-        std::size_t __work_group_size = oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
-                                        __sub_group_size * __sub_group_size;
+        std::size_t __work_group_size =
+            std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
+                                           __sub_group_size * __sub_group_size);
         const std::size_t __compute_units = oneapi::dpl::__internal::__max_compute_units(__q);
         const std::size_t __min_groups = 2 * std::max<std::size_t>(1, __compute_units / __compute_units_per_core);
         const std::size_t __items = _Band::__items(__compute_units, __min_groups, __work_group_size);
