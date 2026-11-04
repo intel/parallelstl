@@ -37,6 +37,13 @@ void
 __parallel_for(oneapi::dpl::__internal::__omp_backend_tag, _ExecutionPolicy&&, _Index __first, _Index __last, _Fp __f,
                std::size_t __grainsize = __default_chunk_size)
 {
+    const std::size_t __n = __last - __first;
+    if (__n <= __grainsize)
+    {
+        __f(__first, __last);
+        return;
+    }
+
     if (omp_in_parallel())
     {
         // We don't create a nested parallel region in an existing parallel region:
@@ -52,32 +59,31 @@ __parallel_for(oneapi::dpl::__internal::__omp_backend_tag, _ExecutionPolicy&&, _
         return;
     }
 
-    const std::size_t __num_threads = omp_get_max_threads();
-    const auto __policy = oneapi::dpl::__omp_backend::__chunk_partitioner(__first, __last, __num_threads, __grainsize);
-
-    // Do not create a parallel region for one chunk
-    if (__policy.__n_chunks == 1)
-    {
-        __f(__first, __last);
-        return;
-    }
-
     // Conservative empirical estimate:
     // the number of elements per thread up to which dynamic scheduling costs more
     // than the imbalance it removes.
     constexpr std::size_t __static_schedule_max_elements_per_thread = 8192;
+    const std::size_t __num_threads = omp_get_max_threads();
 
-    const std::size_t __n = __last - __first;
     if (__n <= __num_threads * __static_schedule_max_elements_per_thread)
     {
-        _ONEDPL_PRAGMA(omp parallel for schedule(static))
-        for (std::size_t __chunk = 0; __chunk < __policy.__n_chunks; ++__chunk)
+        // Static scheduling has almost no cost per chunk, so finer-grained chunks can be used:
+        // they can use more threads in case small number of elements
+        constexpr std::size_t __static_schedule_min_chunk_size = 64;
+        const auto __static_policy = oneapi::dpl::__omp_backend::__chunk_partitioner(
+            __first, __last, __num_threads, __static_schedule_min_chunk_size);
+
+        _ONEDPL_PRAGMA(omp parallel for schedule(static, 1))
+        for (std::size_t __chunk = 0; __chunk < __static_policy.__n_chunks; ++__chunk)
         {
-            oneapi::dpl::__omp_backend::__process_chunk(__policy, __first, __chunk, __f);
+            oneapi::dpl::__omp_backend::__process_chunk(__static_policy, __first, __chunk, __f);
         }
     }
     else
     {
+        const auto __policy =
+            oneapi::dpl::__omp_backend::__chunk_partitioner(__first, __last, __num_threads, __grainsize);
+
         // In libiomp, monotonic scheduling empirically shows better results
         // even on CPUs with hybrid cores with uneven workload.
         // In libgomp, there is no observable difference between monotonic and nonmonotonic modifiers.
