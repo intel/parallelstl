@@ -1329,6 +1329,72 @@ struct __segmented_reduce_slice_submitter<_Acc, __internal::__optional_kernel_na
                 std::max<std::uint32_t>(1, oneapi::dpl::__internal::__dpl_ceiling_div(__length, __tile))};
     }
 
+    // f(k) = ceil((end(k) - begin(0)) / T) + k + 1: the work-group after the last one of segment k
+    template <typename _OffsetRange, typename _Size>
+    static std::uint32_t
+    __groups_through(const _OffsetRange __offsets, const _Size __n, const _Size __start, const std::uint32_t __k,
+                     const std::uint32_t __tile)
+    {
+        const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k + 1], __n);
+        return oneapi::dpl::__internal::__dpl_ceiling_div(std::uint32_t(std::max<_Size>(0, __end - __start)), __tile) +
+               __k + 1;
+    }
+
+    // The segment of a work-group: the first k in [0, m) with f(k) > group, else m
+    template <typename _OffsetRange, typename _Size>
+    static std::uint32_t
+    __segment_of(const _OffsetRange __offsets, const _Size __n, const _Size __start,
+                 const std::uint32_t __m, const std::uint32_t __group, const std::uint32_t __num_groups,
+                 const std::uint32_t __tile)
+    {
+        auto __after = [&](const std::uint32_t __k) {
+            return __groups_through(__offsets, __n, __start, __k, __tile) > __group;
+        };
+        std::uint32_t __lo = 0, __hi = __m;
+        // Equal segments put work-group g near segment g m / groups; doubling steps bracket the answer, then a
+        // binary search in the bracket
+        const std::uint32_t __guess =
+            std::min<std::uint32_t>(__m - 1, std::uint64_t(__group) * __m / __num_groups);
+        if (__after(__guess))
+        {
+            __hi = __guess;
+            for (std::uint32_t __step = 1; __hi > 0; __step *= 2)
+            {
+                const std::uint32_t __below = __hi > __step ? __hi - __step : 0;
+                if (!__after(__below))
+                {
+                    __lo = __below + 1;
+                    break;
+                }
+                __hi = __below;
+            }
+        }
+        else
+        {
+            __lo = __guess + 1;
+            for (std::uint32_t __step = 1; __lo < __m; __step *= 2)
+            {
+                const std::uint32_t __above = std::min<std::uint32_t>(__m, __lo + __step - 1);
+                if (__above == __m || __after(__above))
+                {
+                    __hi = __above;
+                    break;
+                }
+                __lo = __above + 1;
+            }
+        }
+        while (__lo < __hi)
+        {
+            const std::uint32_t __mid = __lo + (__hi - __lo) / 2;
+            const bool __is_after = __after(__mid);
+            if (__is_after)
+                __hi = __mid;
+            if (!__is_after)
+                __lo = __mid + 1;
+        }
+        return __lo;
+    }
+
     template <typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     void
     operator()(sycl::queue& __q, _InRange&& __input, _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n,
@@ -1359,22 +1425,9 @@ struct __segmented_reduce_slice_submitter<_Acc, __internal::__optional_kernel_na
                     const std::uint32_t __lid = __item.get_local_id(0);
                     const _Size __start = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[0], __n);
 
-                    // The segment of the work-group: the first k with f(k) > group, uniform across the work-group
-                    std::uint32_t __lo = 0, __hi = std::uint32_t(__m);
-                    while (__lo < __hi)
-                    {
-                        const std::uint32_t __mid = __lo + (__hi - __lo) / 2;
-                        const _Size __mid_end =
-                            oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__mid + 1], __n);
-                        const std::uint32_t __f = oneapi::dpl::__internal::__dpl_ceiling_div(
-                                                      std::uint32_t(std::max<_Size>(0, __mid_end - __start)), __tile) +
-                                                  __mid + 1;
-                        if (__f > __group)
-                            __hi = __mid;
-                        if (__f <= __group)
-                            __lo = __mid + 1;
-                    }
-                    const std::uint32_t __k = __lo;
+                    // The segment of the work-group, uniform across the work-group
+                    const std::uint32_t __k =
+                        __segment_of(__offsets, __n, __start, std::uint32_t(__m), __group, __num_groups, __tile);
                     if (__k >= std::uint32_t(__m))
                         return;
 
