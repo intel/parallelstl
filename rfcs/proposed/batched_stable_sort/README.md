@@ -132,9 +132,10 @@ Runtime Parameters:
 * Input and output must not overlap. Full aliasing is served by the in-place overloads; partial
   overlap is not supported.
 * All algorithms order keys by the same total order as `kt::gpu::radix_sort`, the order of their
-  order-preserving bit transform: for floating point, `-0.0` sorts before `+0.0`, and NaNs are
-  ordered by sign and payload. Since every algorithm is also stable, the output does not depend on
-  the `_SortConfig`, so it can be chosen for performance alone.
+  order-preserving bit transform: for floating point, `-0.0` and `+0.0` compare equal (so, by
+  stability, keep their input order), and NaNs are ordered by sign and payload. Since every
+  algorithm is also stable, the output does not depend on the `_SortConfig`, so it can be chosen
+  for performance alone.
 * Supported key types, data passing mechanisms (USM pointers, `oneapi::dpl::begin` / `end`,
   `sycl::buffer`, `views::all` / `views::subrange`), and the returned `sycl::event` match the
   existing `kt::gpu::radix_sort[_by_key]`.
@@ -358,7 +359,7 @@ These are left out of the initial proposal to limit scope.
 ```c++
 template <typename _SortConfig, typename _KeyT, typename _ValT, typename _KernelParam>
 constexpr std::size_t
-batched_stable_sort_by_key_bytes_req(std::size_t __segment_size, std::size_t __total_size, bool __in_place, _KernelParam __param = {});
+batched_stable_sort_by_key_bytes_req(std::size_t __segment_size, std::size_t __total_size, _KernelParam __param = {});
 ```
 
   The memory would then be passed as a pointer and a size in bytes, directly before the
