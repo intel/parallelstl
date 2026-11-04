@@ -11,7 +11,6 @@
 #define _ONEDPL_PARALLEL_BACKEND_SYCL_REDUCE_BY_SEGMENT_OFFSETS_H
 
 #include <algorithm>   // std::min, std::max, std::clamp
-#include <cassert>     // assert
 #include <cmath>       // std::sqrt
 #include <cstddef>     // std::size_t
 #include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t, std::uintptr_t
@@ -1310,8 +1309,17 @@ struct __parallel_reduce_by_segment_offsets
         // Segment lengths and index steps may go negative before they are clamped
         static_assert(std::is_signed_v<_Size>, "The size type must be signed");
 
-        // __pattern_reduce_by_segment_offsets returns for no segments and fills the results of an empty input
-        assert(__n > 0 && __m > 0);
+        // No segments: nothing to write; an empty input: every segment gets the init.
+        // The caller, __pattern_reduce_by_segment_offsets, handles both already;
+        // the guard keeps the divisions below defined
+        if (__m <= 0 || __n <= 0)
+        {
+            if (__m > 0)
+                __parallel_reduce_by_segment_offsets_fill<_Acc>(
+                    _BackendTag{}, make_wrapped_policy<__segmented_reduce_all_empty_wrapper>(__exec), __result, __m,
+                    __init);
+            return;
+        }
 
         sycl::queue __q = __exec.queue();
         const bool __is_gpu = __q.get_device().is_gpu();
