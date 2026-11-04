@@ -1267,6 +1267,8 @@ struct __segmented_reduce_is_buffer<sycl::buffer<_T, __dim, _AllocT>> : std::tru
 template <typename _Name>
 class __segmented_reduce_length_wrapper;
 template <typename _Name>
+class __segmented_reduce_all_empty_wrapper;
+template <typename _Name>
 class __segmented_reduce_scan_wrapper;
 template <typename _Name>
 class __segmented_reduce_chunk_wrapper;
@@ -1332,6 +1334,15 @@ struct __parallel_reduce_by_segment_offsets
         {
             // Long average segment: all in chunks, chunk length from the longest on GPUs; chunkless segments get init
             const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
+            // Every segment empty: only the init to write
+            if (__max_length == 0)
+            {
+                // Own kernel name: the fill of an empty input has another result range
+                __parallel_reduce_by_segment_offsets_fill<_Acc>(
+                    _BackendTag{}, make_wrapped_policy<__segmented_reduce_all_empty_wrapper>(__exec), __result, __m,
+                    __init);
+                return;
+            }
             __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
                                __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
             return;
