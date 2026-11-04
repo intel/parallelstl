@@ -443,8 +443,9 @@ struct __segmented_reduce_flat_local<true, _Acc, _Size>
     }
 };
 
-// Combines the first __active lanes of a sub-group onto lane 0: sub-group reduce if the op has a known identity (others
-// give it), else a tree of compile-time shifts, as run-time shifts reach other lanes' registers indirectly
+// Combines the first __active lanes of a sub-group onto lane 0: sub-group reduce if the op has a known identity (the
+// other lanes give it), else a tree of compile-time shifts, as run-time shifts reach other lanes' registers indirectly.
+// Every lane passes a constructed value; those of the other lanes are not used
 template <typename _Acc, typename _SubGroup, typename _BinaryOperation>
 _Acc
 __segmented_reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t __active, _BinaryOperation __binary_op)
@@ -468,7 +469,6 @@ __segmented_reduce_lanes(const _SubGroup __sg, _Acc __acc, const std::uint32_t _
         };
 
         // Shifts up to 16 cover the at most 32 lanes; __shift < __active is uniform, as the shift needs all lanes
-
         __step(std::integral_constant<std::uint32_t, 1>{});
         __step(std::integral_constant<std::uint32_t, 2>{});
         __step(std::integral_constant<std::uint32_t, 4>{});
@@ -761,7 +761,7 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __lane = __sg.get_local_linear_id();
         const std::uint32_t __sub_group_size = __sg.get_local_linear_range();
 
-        // Accumulators start from their first values; an idle lane holds none and what it passes is never used
+        // Accumulators start from their first values; an idle lane holds the init, which is passed but never used
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head;
         if (__is_first)
             __head.__setup(__segmented_reduce_to_acc<_Acc>(
@@ -841,6 +841,8 @@ struct __segmented_reduce_flat_submitter<
             for (; __i < __last; __i += __active)
                 __acc.__v = std::invoke(__binary_op, __acc.__v, __element(__input, __base, __i));
         }
+        if (__lane >= __active)
+            __acc.__setup(__segmented_reduce_to_acc<_Acc>(__init));
 
         if (__active > 0)
             __acc.__v = __segmented_reduce_lanes<_Acc>(__sg, __acc.__v, __active, __binary_op);
@@ -1096,11 +1098,13 @@ struct __segmented_reduce_flat_submitter<
             return;
 
         // Following heads: one per lane, then four per lane at a time so loads overlap; heads are already accumulators,
-        // so a lane may start from one alone
+        // so a lane may start from one alone; an idle lane holds the tail, which is passed but never used
         const _Acc* const __first_head = __heads + (__unit + 1);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
         if (__lane < __heads_count)
             __acc.__setup(__first_head[__lane]);
+        if (__lane >= __heads_count)
+            __acc.__setup(__tail);
         std::uint32_t __k = __lane + __sub_group_size;
         for (; __k + 3 * __sub_group_size < __heads_count; __k += 4 * __sub_group_size)
             __acc.__v = std::invoke(__binary_op, __acc.__v,
