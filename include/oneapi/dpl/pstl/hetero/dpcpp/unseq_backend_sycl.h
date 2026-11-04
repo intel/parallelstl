@@ -569,12 +569,15 @@ template <typename _Pred>
 struct adjacent_match_pred
 {
     _Pred __pred;
+    // Always 1. Held at run time so the two reads stay separate: for 2-byte elements a compiler that sees
+    // them adjacent merges them into one misaligned 4-byte load.
+    std::size_t __next = 1;
 
     template <typename _Idx, typename _Range>
     bool
     operator()(const _Idx __idx, const _Range& __rng) const
     {
-        return __pred(__rng[__idx], __rng[__idx + 1]);
+        return __pred(__rng[__idx], __rng[__idx + __next]);
     }
 };
 
