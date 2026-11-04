@@ -43,7 +43,7 @@
 #define _ONEDPL_REDUCE_BY_SEGMENT_IMPL_H
 
 #include <algorithm> // std::min, std::max, std::upper_bound
-#include <atomic>    // std::atomic
+#include <atomic>    // std::atomic, std::memory_order_relaxed
 #include <cstdint>
 #include <functional> // std::invoke
 #include <type_traits>
