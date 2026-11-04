@@ -49,7 +49,7 @@
 #include <type_traits>
 #include <utility>
 #include <iterator> // std::distance
-#include <memory>   // std::destroy_at
+#include <memory>   // std::destroy_at, std::destroy_n
 
 #include "by_segment_extension_defs.h"
 #include "../pstl/segmented_reduce_utils.h"
@@ -304,15 +304,12 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
         _Size __segment = -1; // -1: none
         _Size __first = 0;    // the elements [__first, __last) of a head shorter than two elements
         _Size __last = 0;
-        bool __has_value = false;
         bool __ends = false; // a head: the segment ends in the piece
+        oneapi::dpl::__internal::__opt_lazy_ctor_storage<_Acc> __value; // the partial result, if any
     };
     oneapi::dpl::__par_backend::__buffer<__part> __heads_buf(__num_pieces), __tails_buf(__num_pieces);
-    oneapi::dpl::__par_backend::__buffer<_Acc> __head_values_buf(__num_pieces), __tail_values_buf(__num_pieces);
     __part* __heads = __heads_buf.get();
     __part* __tails = __tails_buf.get();
-    _Acc* __head_values = __head_values_buf.get();
-    _Acc* __tail_values = __tail_values_buf.get();
     for (_Size __p = 0; __p < __num_pieces; ++__p)
     {
         ::new (__heads + __p) __part{};
@@ -341,12 +338,11 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
                             __h.__ends = __h_end <= __e;
                             if (__h_last - __b >= 2)
                             {
-                                ::new (__head_values + __p) _Acc(__segmented_reduce_host<_Acc>(
+                                __h.__value.__setup(__segmented_reduce_host<_Acc>(
                                     __first_value, __b + 2, __h_last,
                                     __internal::__segmented_reduce_to_acc<_Acc>(
                                         std::invoke(__binary_op, __first_value[__b], __first_value[__b + 1])),
                                     __binary_op, _IsVector{}));
-                                __h.__has_value = true;
                             }
                             else
                             {
@@ -362,10 +358,9 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
                         if (__s_end > __e && __s + 1 == __s_hi)
                         {
                             // The tail: it continues into the next piece
-                            ::new (__tail_values + __p) _Acc(__segmented_reduce_host<_Acc>(
+                            __tails[__p].__value.__setup(__segmented_reduce_host<_Acc>(
                                 __first_value, __s_begin, __e, __init, __binary_op, _IsVector{}));
                             __tails[__p].__segment = __s;
-                            __tails[__p].__has_value = true;
                             continue;
                         }
                         __result_value[__s] = __segmented_reduce_host<_Acc>(
@@ -381,11 +376,11 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
         for (_Size __p = 0; __p < __num_pieces; ++__p)
         {
-            const __part& __h = __heads[__p];
+            __part& __h = __heads[__p];
             if (__h.__segment >= 0 && __h.__segment == __open)
             {
-                if (__h.__has_value)
-                    __acc.__v = std::invoke(__binary_op, std::move(__acc.__v), std::move(__head_values[__p]));
+                if (__h.__value.__has_value())
+                    __acc.__v = std::invoke(__binary_op, std::move(__acc.__v), std::move(__h.__value.__get_ref()));
                 for (_Size __i = __h.__first; __i < __h.__last; ++__i)
                     __acc.__v = std::invoke(__binary_op, std::move(__acc.__v), __first_value[__i]);
                 if (__h.__ends)
@@ -403,7 +398,7 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
                     __result_value[__open] = std::move(__acc.__v);
                     __acc.__destroy();
                 }
-                __acc.__setup(std::move(__tail_values[__p]));
+                __acc.__setup(std::move(__tails[__p].__value.__get_ref()));
                 __open = __tails[__p].__segment;
             }
         }
@@ -413,15 +408,11 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
             __acc.__destroy();
         }
 
+        // The partial results that were set up
         if constexpr (!std::is_trivially_destructible_v<_Acc>)
         {
-            for (_Size __p = 0; __p < __num_pieces; ++__p)
-            {
-                if (__heads[__p].__has_value)
-                    __head_values[__p].~_Acc();
-                if (__tails[__p].__has_value)
-                    __tail_values[__p].~_Acc();
-            }
+            std::destroy_n(__heads, __num_pieces);
+            std::destroy_n(__tails, __num_pieces);
         }
     });
 }
