@@ -63,6 +63,19 @@ __reduce_by_segment_offsets_impl(__internal::__hetero_tag<_BackendTag> __tag, _P
         __init_value, __binary_op);
 }
 
+template <typename _BackendTag, typename _Policy, typename _RandomAccessInputIt, typename _SegmentNum,
+          typename _SegmentLength, typename _RandomAccessOutputIt, typename _InitType, typename _BinaryOperation>
+_RandomAccessOutputIt
+__reduce_by_segment_fixed_impl(__internal::__hetero_tag<_BackendTag> __tag, _Policy&& __policy,
+                               _RandomAccessInputIt __first_value, _RandomAccessInputIt __last_value,
+                               _RandomAccessOutputIt __result_value, _SegmentNum __num_segments,
+                               _SegmentLength __segment_length, _InitType __init_value, _BinaryOperation __binary_op)
+{
+    return oneapi::dpl::__internal::__pattern_reduce_by_segment_fixed(
+        __tag, std::forward<_Policy>(__policy), __first_value, __last_value, __result_value, __num_segments,
+        __segment_length, __init_value, __binary_op);
+}
+
 } // namespace internal
 } // namespace dpl
 } // namespace oneapi

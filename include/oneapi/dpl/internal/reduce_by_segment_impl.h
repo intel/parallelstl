@@ -197,6 +197,29 @@ __reduce_by_segment_offsets_impl(_Tag, _Policy&&, _InputValueIt __first_value, _
     return __this_segment;
 }
 
+// The host policies: the offsets k L of a transform iterator over a counting iterator, through the offsets overload
+template <typename _Tag, typename _Policy, typename _InputValueIt, typename _SegmentNum, typename _SegmentLength,
+          typename _OutputValueIt, typename _InitType, typename _BinaryOperation>
+_OutputValueIt
+__reduce_by_segment_fixed_impl(_Tag __tag, _Policy&& __policy, _InputValueIt __first_value, _InputValueIt __last_value,
+                               _OutputValueIt __result_value, _SegmentNum __num_segments,
+                               _SegmentLength __segment_length, _InitType __init, _BinaryOperation __binary_op)
+{
+    if (__num_segments <= 0 || __segment_length < 0)
+        return __result_value;
+
+    using _Diff = typename std::iterator_traits<_InputValueIt>::difference_type;
+    using _Size = std::make_signed_t<
+        std::common_type_t<decltype(+_Diff{}), decltype(+__num_segments), decltype(+__segment_length)>>;
+    const _Size __n = __last_value - __first_value;
+    const _Size __length = std::min<_Size>(__n, _Size(__segment_length));
+    auto __offsets = oneapi::dpl::make_transform_iterator(oneapi::dpl::counting_iterator<_Size>(0),
+                                                          __internal::__segmented_reduce_fixed_offset<_Size>{__length, __n});
+
+    return __reduce_by_segment_offsets_impl(__tag, std::forward<_Policy>(__policy), __first_value, __last_value,
+                                            __result_value, __num_segments, __offsets, __init, __binary_op);
+}
+
 } // namespace internal
 
 template <typename Policy, typename InputIterator1, typename InputIterator2, typename OutputIterator1,
@@ -263,6 +286,35 @@ reduce_by_segment(Policy&& policy, InputIt first, InputIt last, OutputIt out_fir
 {
     return reduce_by_segment(std::forward<Policy>(policy), first, last, out_first, num_segments, offsets, init_value,
                              std::plus<>());
+}
+
+template <typename Policy, typename InputIt, typename OutputIt, typename SegmentNumT, typename SegmentLengthT,
+          typename InitT, typename BinaryOp>
+oneapi::dpl::__internal::__enable_if_execution_policy<
+    Policy, std::enable_if_t<std::is_integral_v<SegmentNumT> && std::is_integral_v<SegmentLengthT>, OutputIt>>
+reduce_by_segment(Policy&& policy, InputIt first, InputIt last, OutputIt out_first, SegmentNumT num_segments,
+                  SegmentLengthT segment_length, InitT init_value, BinaryOp binary_op)
+{
+    static_assert(!std::is_same_v<SegmentNumT, bool>,
+                  "The number of segments of reduce_by_segment must be of an integral type other than bool");
+    static_assert(!std::is_same_v<SegmentLengthT, bool>,
+                  "The segment length of reduce_by_segment must be of an integral type other than bool");
+
+    const auto __dispatch_tag = oneapi::dpl::__internal::__select_backend(policy, first, out_first);
+
+    return internal::__reduce_by_segment_fixed_impl(__dispatch_tag, std::forward<Policy>(policy), first, last,
+                                                    out_first, num_segments, segment_length, init_value, binary_op);
+}
+
+template <typename Policy, typename InputIt, typename OutputIt, typename SegmentNumT, typename SegmentLengthT,
+          typename InitT>
+oneapi::dpl::__internal::__enable_if_execution_policy<
+    Policy, std::enable_if_t<std::is_integral_v<SegmentNumT> && std::is_integral_v<SegmentLengthT>, OutputIt>>
+reduce_by_segment(Policy&& policy, InputIt first, InputIt last, OutputIt out_first, SegmentNumT num_segments,
+                  SegmentLengthT segment_length, InitT init_value)
+{
+    return reduce_by_segment(std::forward<Policy>(policy), first, last, out_first, num_segments, segment_length,
+                             init_value, std::plus<>());
 }
 
 template <typename Policy, typename InputIterator1, typename InputIterator2, typename OutputIterator1,

@@ -1475,6 +1475,281 @@ struct __parallel_reduce_by_segment_offsets
     }
 };
 
+// reduce_by_segment with segments of a fixed length L: segment k is [min(k L, n), min((k + 1) L, n)). On GPUs, for
+// arithmetic types, the boundaries are computed, not searched: below a sub-group of elements a work-item per segment;
+// up to a tile a work-group per segment, one kernel; above, ceil(L / T) work-groups per segment, each leaving the partial
+// result of its slice at k ceil(L / T) + j, and a second kernel combines them. Tuned on GPUs.
+struct __segmented_reduce_fixed_tuning
+{
+    static constexpr std::size_t __sub_group_size = 32;
+    static constexpr std::size_t __work_group_size_limit = 256;
+    static constexpr std::size_t __max_inputs_per_item = 16;
+    // Segments shorter than this take a work-item each
+    static constexpr std::size_t __tiny_segment = 32;
+    static constexpr std::size_t __item_work_group_size = 256;
+    static constexpr std::size_t __combine_work_group_size = 256;
+
+    // Up to this many elements; positions and segment numbers fit in 32 bits
+    static constexpr std::size_t __max_input = std::size_t(1) << 30;
+    static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
+};
+
+template <typename... _Name>
+class __segmented_reduce_fixed_item_kernel;
+
+template <typename... _Name>
+class __segmented_reduce_fixed_group_kernel;
+
+template <typename... _Name>
+class __segmented_reduce_fixed_combine_kernel;
+
+template <typename _Acc, typename _ItemName, typename _GroupName, typename _CombineName, typename _InitType,
+          typename _BinaryOperation, typename _Tuning>
+struct __segmented_reduce_fixed_submitter;
+
+template <typename _Acc, typename... _ItemName, typename... _GroupName, typename... _CombineName, typename _InitType,
+          typename _BinaryOperation, typename _Tuning>
+struct __segmented_reduce_fixed_submitter<_Acc, __internal::__optional_kernel_name<_ItemName...>,
+                                          __internal::__optional_kernel_name<_GroupName...>,
+                                          __internal::__optional_kernel_name<_CombineName...>, _InitType,
+                                          _BinaryOperation, _Tuning>
+{
+    static_assert(std::is_arithmetic_v<_Acc>, "the fixed-length path takes arithmetic accumulators only");
+
+    _InitType __init;
+    mutable _BinaryOperation __binary_op;
+
+    // Segment k within the input of __n elements: begin and length; __full segments lie wholly in it
+    static std::pair<std::uint32_t, std::uint32_t>
+    __bounds(const std::uint32_t __k, const std::uint32_t __n, const std::uint32_t __length,
+             const std::uint32_t __full)
+    {
+        const std::uint32_t __begin = __k < __full ? __k * __length : std::min(__n, __full * __length);
+        const std::uint32_t __end = __k < __full ? __begin + __length : __n;
+        // With a zero length every segment is empty; otherwise the one after the full ones takes the rest
+        return {__begin, __length != 0 && __k <= __full ? __end - __begin : 0};
+    }
+
+    // [__begin, __begin + __length) of the input (non-empty) by a work-group onto work-item 0; work-item 0 starts from
+    // op(init, first) when __with_init; one past the length starts from the first element, skipped below
+    template <typename _InRange, typename _Local>
+    _Acc
+    __reduce_by_work_group(const sycl::nd_item<1> __item, const _InRange __input, const std::uint32_t __begin,
+                           const std::uint32_t __length, const bool __with_init, const _Local __loc_partials) const
+    {
+        constexpr std::uint32_t __sub_group_size = _Tuning::__sub_group_size;
+        const std::uint32_t __work_group_size = __item.get_local_range(0);
+        const std::uint32_t __lid = __item.get_local_id(0);
+        const std::uint32_t __first = __lid < __length ? __lid : 0;
+        _Acc __acc = __lid == 0 && __with_init
+                         ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __input[__begin]))
+                         : __segmented_reduce_to_acc<_Acc>(__input[__begin + __first]);
+        for (std::uint32_t __i = __lid + __work_group_size; __i < __length; __i += __work_group_size)
+            __acc = std::invoke(__binary_op, __acc, __input[__begin + __i]);
+
+        const auto __sg = __item.get_sub_group();
+        const std::uint32_t __sg_id = __sg.get_group_linear_id();
+        const std::uint32_t __items = std::min(__length, __work_group_size);
+        const std::uint32_t __sg_first = __sg_id * __sub_group_size;
+        const std::uint32_t __active = __items > __sg_first ? std::min(__sub_group_size, __items - __sg_first) : 0;
+        __acc = __segmented_reduce_lanes<_Acc>(__sg, __acc, __active, __binary_op);
+
+        // Uniform across the work-group, as the barrier needs
+        const std::uint32_t __active_sub_groups = oneapi::dpl::__internal::__dpl_ceiling_div(__items, __sub_group_size);
+        if (__active_sub_groups > 1)
+        {
+            if (__active > 0 && __sg.get_local_linear_id() == 0)
+                __loc_partials[__sg_id] = __acc;
+
+            sycl::group_barrier(__item.get_group());
+
+            if (__sg_id == 0)
+            {
+                const std::uint32_t __lane = __sg.get_local_linear_id();
+                // Inactive lanes read slot 0 to stay in bounds; their values are not used
+                __acc = __segmented_reduce_lanes<_Acc>(
+                    __sg, __loc_partials[__lane < __active_sub_groups ? __lane : 0], __active_sub_groups,
+                    __binary_op);
+            }
+        }
+        return __acc;
+    }
+
+    template <typename _InRange, typename _OutRange>
+    void
+    operator()(sycl::queue& __q, _InRange&& __input, _OutRange&& __result, const std::uint32_t __n,
+               const std::uint32_t __m, const std::uint32_t __length) const
+    {
+        constexpr std::uint32_t __sub_group_size = _Tuning::__sub_group_size;
+        const _Acc __init_acc = __segmented_reduce_to_acc<_Acc>(__init);
+        // Segments wholly in the input; the next one may be cut, the rest are empty
+        const std::uint32_t __full = __length == 0 ? 0 : std::min(__m, __n / __length);
+
+        // A work-item per segment
+        if (__length < _Tuning::__tiny_segment)
+        {
+            constexpr std::uint32_t __wg = _Tuning::__item_work_group_size;
+            const std::size_t __groups = oneapi::dpl::__internal::__dpl_ceiling_div(std::size_t(__m), std::size_t(__wg));
+            __q.submit([&](sycl::handler& __cgh) {
+                   oneapi::dpl::__ranges::__require_access(__cgh, __input, __result);
+                   __cgh.parallel_for<_ItemName...>(
+                       sycl::nd_range<1>(sycl::range<1>(__groups * __wg), sycl::range<1>(__wg)),
+                       [=, *this](sycl::nd_item<1> __item) {
+                           const std::uint32_t __k = __item.get_global_id(0);
+                           if (__k >= __m)
+                               return;
+                           const std::pair<std::uint32_t, std::uint32_t> __b = __bounds(__k, __n, __length, __full);
+                           if (__b.second == 0)
+                               __result[__k] = __init_acc;
+                           if (__b.second == 0)
+                               return;
+                           _Acc __acc =
+                               __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __input[__b.first]));
+                           for (std::uint32_t __i = 1; __i < __b.second; ++__i)
+                               __acc = std::invoke(__binary_op, __acc, __input[__b.first + __i]);
+                           __result[__k] = __acc;
+                       });
+               }).wait_and_throw();
+            return;
+        }
+
+        const std::size_t __max_size =
+            std::max<std::size_t>(__sub_group_size,
+                                  oneapi::dpl::__internal::__max_work_group_size(__q, _Tuning::__work_group_size_limit) /
+                                      __sub_group_size * __sub_group_size);
+        // The work-group: a power of two of sub-groups about the length per work-item bound, up to the limit; the
+        // tile: the work-group times the most elements per work-item
+        std::uint32_t __wg = __sub_group_size;
+        while (std::size_t(__wg) * _Tuning::__max_inputs_per_item < __length && __wg < __max_size)
+            __wg *= 2;
+        const std::uint32_t __tile = __wg * _Tuning::__max_inputs_per_item;
+        const std::uint32_t __slices = oneapi::dpl::__internal::__dpl_ceiling_div(__length, __tile);
+        // Segments with any element: __full, and one cut by the end of the input
+        const std::uint32_t __in_input = std::min<std::uint32_t>(__m, __full + (__full < __m && __full * __length < __n));
+        // With slices, the groups cover only the segments in the input; the second kernel writes the init to the rest
+        const std::size_t __num_groups = __slices == 1 ? std::size_t(__m) : std::size_t(__in_input) * __slices;
+
+        __device_storage<_Acc> __partials_storage{__q, __slices == 1 ? 1 : __num_groups};
+
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
+            oneapi::dpl::__ranges::__require_access(__cgh, __input, __result);
+            auto __partials_acc = __get_accessor(sycl::write_only, __partials_storage, __cgh, __dpl_sycl::__no_init{});
+            __dpl_sycl::__local_accessor<_Acc> __loc_partials_acc(sycl::range<1>(__wg / __sub_group_size), __cgh);
+
+            __cgh.parallel_for<_GroupName...>(
+                sycl::nd_range<1>(sycl::range<1>(__num_groups * __wg), sycl::range<1>(__wg)),
+                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
+                    const std::uint32_t __group = __item.get_group(0);
+                    const std::uint32_t __k = __group / __slices;
+                    const std::uint32_t __j = __group % __slices;
+                    const std::pair<std::uint32_t, std::uint32_t> __b = __bounds(__k, __n, __length, __full);
+                    // The slices of a segment cut by the end of the input
+                    const std::uint32_t __used = std::max<std::uint32_t>(
+                        1, oneapi::dpl::__internal::__dpl_ceiling_div(__b.second, __tile));
+                    if (__j >= __used)
+                        return;
+                    if (__b.second == 0)
+                    {
+                        if (__item.get_local_id(0) == 0)
+                            __result[__k] = __init_acc;
+                        return;
+                    }
+                    const std::uint32_t __slice_begin = __b.first + __j * __tile;
+                    const std::uint32_t __slice_length = std::min(__tile, __b.second - __j * __tile);
+                    const _Acc __acc = __reduce_by_work_group(__item, __input, __slice_begin, __slice_length, __j == 0,
+                                                              __loc_partials_acc);
+                    if (__item.get_local_id(0) == 0 && __used == 1)
+                        __result[__k] = __acc;
+                    if (__item.get_local_id(0) == 0 && __used > 1)
+                        __partials_acc.__data()[__group] = __acc;
+                });
+        });
+
+        if (__slices > 1)
+        {
+            constexpr std::uint32_t __cwg = _Tuning::__combine_work_group_size;
+            constexpr std::uint32_t __csg = __cwg / __sub_group_size;
+            const std::size_t __cgroups = oneapi::dpl::__internal::__dpl_ceiling_div(std::size_t(__m), std::size_t(__csg));
+
+            __event = __q.submit([&](sycl::handler& __cgh) {
+                oneapi::dpl::__ranges::__require_access(__cgh, __result);
+                auto __partials_acc = __get_accessor(sycl::read_only, __partials_storage, __cgh);
+                __cgh.depends_on(__event);
+
+                __cgh.parallel_for<_CombineName...>(
+                    sycl::nd_range<1>(sycl::range<1>(__cgroups * __cwg), sycl::range<1>(__cwg)),
+                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
+                        const auto __sg = __item.get_sub_group();
+                        const std::uint32_t __lane = __sg.get_local_linear_id();
+                        const std::uint32_t __k = __item.get_group(0) * __csg + __sg.get_group_linear_id();
+                        if (__k >= __m)
+                            return;
+                        const std::pair<std::uint32_t, std::uint32_t> __b = __bounds(__k, __n, __length, __full);
+                        const std::uint32_t __used = oneapi::dpl::__internal::__dpl_ceiling_div(__b.second, __tile);
+                        if (__k >= __in_input && __lane == 0)
+                            __result[__k] = __init_acc;
+                        if (__k >= __in_input || __used <= 1)
+                            return;
+
+                        const _Acc* const __partials = __partials_acc.__data() + std::size_t(__k) * __slices;
+                        // Lanes past the slices start from the first one, which the combination below skips
+                        _Acc __acc = __partials[__lane < __used ? __lane : 0];
+                        for (std::uint32_t __i = __lane + __sub_group_size; __i < __used; __i += __sub_group_size)
+                            __acc = std::invoke(__binary_op, __acc, __partials[__i]);
+                        __acc = __segmented_reduce_lanes<_Acc>(__sg, __acc, std::min(__used, __sub_group_size),
+                                                               __binary_op);
+                        if (__lane == 0)
+                            __result[__k] = __acc;
+                    });
+            });
+        }
+
+        // Wait: the algorithm has no asynchronous interface, and the temporary storage is released on return
+        __event.wait_and_throw();
+    }
+};
+
+// Fixed-length segments: the computed boundaries on GPUs for arithmetic types, else the offsets k L of __offsets
+template <typename _Acc, typename _FixedTuning = __segmented_reduce_fixed_tuning>
+struct __parallel_reduce_by_segment_fixed
+{
+    template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
+              typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
+    void
+    operator()(_BackendTag __tag, _ExecutionPolicy&& __exec, _InRange&& __input, _OffsetRange&& __offsets,
+               _OutRange&& __result, const _Size __n, const _Size __m, const _Size __length, _InitType __init,
+               _BinaryOperation __binary_op) const
+    {
+        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
+        assert(__n > 0 && __m > 0 && __length >= 0 && __length <= __n);
+
+        if constexpr (std::is_arithmetic_v<_Acc> &&
+                      std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
+        {
+            sycl::queue __q = __exec.queue();
+            if (__q.get_device().is_gpu() &&
+                oneapi::dpl::__internal::__supports_sub_group_size(__q, _FixedTuning::__sub_group_size) &&
+                std::size_t(__n) <= _FixedTuning::__max_input && std::size_t(__m) <= _FixedTuning::__max_input)
+            {
+                using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
+                using _ItemKernel =
+                    __internal::__kernel_name_provider<__segmented_reduce_fixed_item_kernel<_CustomName>>;
+                using _GroupKernel =
+                    __internal::__kernel_name_provider<__segmented_reduce_fixed_group_kernel<_CustomName>>;
+                using _CombineKernel =
+                    __internal::__kernel_name_provider<__segmented_reduce_fixed_combine_kernel<_CustomName>>;
+                __segmented_reduce_fixed_submitter<_Acc, _ItemKernel, _GroupKernel, _CombineKernel, _InitType,
+                                                   _BinaryOperation, _FixedTuning>{__init, __binary_op}(
+                    __q, __input, __result, std::uint32_t(__n), std::uint32_t(__m), std::uint32_t(__length));
+                return;
+            }
+        }
+
+        __parallel_reduce_by_segment_offsets<_Acc>{}(__tag, std::forward<_ExecutionPolicy>(__exec), __input, __offsets,
+                                                     __result, __n, __m, __init, __binary_op);
+    }
+};
+
 } // namespace __par_backend_hetero
 } // namespace dpl
 } // namespace oneapi

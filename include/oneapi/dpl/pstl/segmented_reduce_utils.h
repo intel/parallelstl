@@ -71,6 +71,20 @@ __segmented_reduce_clamp_offset(_Offset __offset, _Size __n)
     return static_cast<_Unsigned>(__offset) < static_cast<_Unsigned>(__n) ? static_cast<_Size>(__offset) : __n;
 }
 
+// The offset k of segments of a fixed length, clamped to the input of __n elements before it could overflow
+template <typename _Size>
+struct __segmented_reduce_fixed_offset
+{
+    _Size __length = {};
+    _Size __n = {};
+
+    _Size
+    operator()(const _Size __k) const
+    {
+        return __length == 0 ? _Size{0} : __k <= __n / __length ? __k * __length : __n;
+    }
+};
+
 } // namespace __internal
 } // namespace dpl
 } // namespace oneapi

@@ -272,6 +272,56 @@ __pattern_reduce_by_segment(__hetero_tag<_BackendTag> __tag, _ExecutionPolicy&& 
 }
 
 //------------------------------------------------------------------------
+// reduce_by_segment with segments of a fixed length
+//------------------------------------------------------------------------
+
+template <typename _BackendTag, typename _ExecutionPolicy, typename _RandomAccessInputIt, typename _SegmentNum,
+          typename _SegmentLength, typename _RandomAccessOutputIt, typename _InitType, typename _BinaryOperation>
+_RandomAccessOutputIt
+__pattern_reduce_by_segment_fixed(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _RandomAccessInputIt __first,
+                                  _RandomAccessInputIt __last, _RandomAccessOutputIt __result,
+                                  _SegmentNum __num_segments, _SegmentLength __segment_length, _InitType __init,
+                                  _BinaryOperation __binary_op)
+{
+    if (__num_segments <= 0 || __segment_length < 0)
+        return __result;
+
+    using _Acc = __segmented_reduce_acc_t<_InitType, _RandomAccessInputIt, _BinaryOperation>;
+    using _Diff = typename std::iterator_traits<_RandomAccessInputIt>::difference_type;
+    using _Size = std::make_signed_t<
+        std::common_type_t<decltype(+_Diff{}), decltype(+__num_segments), decltype(+__segment_length)>>;
+
+    auto __keep_result = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::write>();
+    auto __result_buf = __keep_result(__result, __result + __num_segments);
+
+    if (__first == __last)
+    {
+        __par_backend_hetero::__parallel_reduce_by_segment_offsets_fill<_Acc>(
+            _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __result_buf.all_view(), _Size(__num_segments),
+            __init);
+        return __result + __num_segments;
+    }
+
+    const _Size __n = __last - __first;
+    // A length above the input gives the same segments as the input size: the first one holds it, the rest are empty
+    const _Size __length = std::min<_Size>(__n, _Size(__segment_length));
+
+    auto __keep_input = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read>();
+    auto __input_buf = __keep_input(__first, __last);
+    // The offsets k L for the paths that need them
+    auto __offsets = oneapi::dpl::make_transform_iterator(oneapi::dpl::counting_iterator<_Size>(0),
+                                                          __segmented_reduce_fixed_offset<_Size>{__length, __n});
+    auto __keep_offsets = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read>();
+    auto __offsets_buf = __keep_offsets(__offsets, __offsets + __num_segments + 1);
+
+    __par_backend_hetero::__parallel_reduce_by_segment_fixed<_Acc>{}(
+        _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __input_buf.all_view(), __offsets_buf.all_view(),
+        __result_buf.all_view(), __n, _Size(__num_segments), __length, __init, __binary_op);
+
+    return __result + __num_segments;
+}
+
+//------------------------------------------------------------------------
 // reduce_by_segment with segments defined by offsets
 //------------------------------------------------------------------------
 
