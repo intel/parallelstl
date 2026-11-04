@@ -52,29 +52,33 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
     static constexpr std::uint32_t __hist_buffer_size = __stage_count * __bin_count;
     // Elements covered by one work-group step: the chunk size
     static constexpr std::uint32_t __chunk_size = __hist_num_sub_groups * __hist_data_per_sub_group;
+    // Number of SLM sub-bins per bin, bounded by the SLM capacity, to reduce atomic contention during accumulation
+    static constexpr std::uint32_t __max_histograms = 16;
+    static constexpr std::uint32_t __max_slm_bytes = 1 << 16;
+    static constexpr std::uint32_t __num_histograms =
+        std::min(__max_histograms, std::uint32_t(__max_slm_bytes / (__hist_buffer_size * sizeof(std::uint32_t))));
+    static constexpr std::uint32_t __slm_size = __hist_buffer_size * __num_histograms;
 
     _KeysRng __keys_rng;
     sycl::local_accessor<std::uint32_t, 1> __slm_acc;
     std::uint32_t* __p_global_offset;
-    std::uint32_t __num_histograms;
     __onesweep_segments __segments;
     std::uint32_t __chunks_per_segment;
     std::uint32_t __chunk_count;
     std::uint32_t __chunks_per_group;
 
     __global_histogram(const _KeysRng& __keys_rng, sycl::local_accessor<std::uint32_t, 1> __slm_acc,
-                       std::uint32_t* __p_global_offset, std::uint32_t __num_histograms,
-                       __onesweep_segments __segments, std::uint32_t __chunks_per_segment,
+                       std::uint32_t* __p_global_offset, __onesweep_segments __segments, std::uint32_t __chunks_per_segment,
                        std::uint32_t __chunk_count, std::uint32_t __chunks_per_group)
         : __keys_rng(__keys_rng), __slm_acc(__slm_acc), __p_global_offset(__p_global_offset),
-          __num_histograms(__num_histograms), __segments(__segments), __chunks_per_segment(__chunks_per_segment),
+          __segments(__segments), __chunks_per_segment(__chunks_per_segment),
           __chunk_count(__chunk_count), __chunks_per_group(__chunks_per_group)
     {
     }
 
     // Zero the group-local histograms in SLM
     static inline void
-    __zero_slm_hists(std::uint32_t* __slm, std::uint32_t __local_id, std::uint32_t __num_histograms)
+    __zero_slm_hists(std::uint32_t* __slm, std::uint32_t __local_id)
     {
         for (_LocIdxT __i = __local_id; __i < __hist_buffer_size; __i += __hist_work_group_size)
         {
@@ -90,7 +94,7 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
     // falls into the last bin of every stage: exclusive scans of the histograms never read the count of the last bin.
     static inline void
     __load_keys(_KeyT (&__keys)[__hist_data_per_work_item], const _KeysRng& __keys_rng, _GlobOffsetT __wi_offset,
-                std::size_t __end)
+                _GlobOffsetT __end)
     {
         if (__wi_offset + __hist_data_per_sub_group <= __end)
         {
@@ -104,7 +108,7 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
         {
             for (std::uint32_t __i = 0; __i != __hist_data_per_work_item; ++__i)
             {
-                std::size_t __key_idx = __i * __sub_group_size + __wi_offset;
+                _GlobOffsetT __key_idx = __i * __sub_group_size + __wi_offset;
                 __keys[__i] = (__key_idx < __end) ? __keys_rng[__key_idx] : __sort_identity<_KeyT, __is_ascending>();
             }
         }
@@ -113,7 +117,7 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
     // Accumulate the histograms of all stages to SLM
     static inline void
     __accumulate_to_slm(std::uint32_t* __slm, const _KeyT (&__keys)[__hist_data_per_work_item],
-                        std::uint32_t __sub_group_local_id, std::uint32_t __num_histograms)
+                        std::uint32_t __sub_group_local_id)
     {
         // SLM uses a blocked layout where each bin contains _NumHistograms sub-bins that are used to reduce
         // contention during atomic accumulation.
@@ -139,7 +143,8 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
         }
     }
 
-    // Reduces the SLM histograms of __segment into global memory and zeroes them for the next segment
+    // Reduces the SLM histograms of __segment into global memory. With __reset, also zeroes them for the next segment
+    template <bool __reset>
     inline void
     __flush_segment(std::uint32_t* __slm, std::uint32_t __local_id, std::uint32_t __segment) const
     {
@@ -153,7 +158,8 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
             for (_LocIdxT __j = 0; __j < __num_histograms; ++__j)
             {
                 __reduced_bincount += __slm[__i * __num_histograms + __j];
-                __slm[__i * __num_histograms + __j] = 0;
+                if constexpr (__reset)
+                    __slm[__i * __num_histograms + __j] = 0;
             }
             // Small segments leave most bins empty
             if (__reduced_bincount != 0)
@@ -189,7 +195,7 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
         std::uint32_t __segment = __chunk / __chunks_per_segment;
         std::uint32_t __local_chunk = __chunk - __segment * __chunks_per_segment;
 
-        __zero_slm_hists(__slm, __local_id, __num_histograms);
+        __zero_slm_hists(__slm, __local_id);
         sycl::group_barrier(__group);
 
         for (; __chunk < __chunk_end; ++__chunk, ++__local_chunk)
@@ -197,7 +203,7 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
             if (__local_chunk == __chunks_per_segment)
             {
                 sycl::group_barrier(__group);
-                __flush_segment(__slm, __local_id, __segment);
+                __flush_segment</*__reset=*/true>(__slm, __local_id, __segment);
                 sycl::group_barrier(__group);
                 ++__segment;
                 __local_chunk = 0;
@@ -213,12 +219,12 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
             {
                 _KeyT __keys[__hist_data_per_work_item];
                 __load_keys(__keys, __keys_rng, __sub_group_start + __sub_group_local_id, __segment_end);
-                __accumulate_to_slm(__slm, __keys, __sub_group_local_id, __num_histograms);
+                __accumulate_to_slm(__slm, __keys, __sub_group_local_id);
             }
         }
 
         sycl::group_barrier(__group);
-        __flush_segment(__slm, __local_id, __segment);
+        __flush_segment</*__reset=*/false>(__slm, __local_id, __segment);
     }
 };
 

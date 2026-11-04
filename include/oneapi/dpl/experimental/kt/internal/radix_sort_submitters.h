@@ -100,13 +100,6 @@ struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_wor
         using _GlobalHistKernelT = __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_group_count,
                                                       __hist_work_group_size, std::decay_t<_KeysRng>>;
 
-        // Calculate number of histograms based on SLM capacity
-        constexpr std::uint32_t __max_histograms = 16;
-        constexpr std::uint32_t __max_slm_bytes = 1 << 16;
-        constexpr std::uint32_t __num_histograms =
-            std::min(__max_histograms,
-                     std::uint32_t(__max_slm_bytes / (_GlobalHistKernelT::__hist_buffer_size * sizeof(std::uint32_t))));
-
         // Each work-group owns a contiguous range of segment-aligned chunks. __hist_work_group_count is a maximum,
         // but is reduced so that groups are balanced in chunks across the work-groups
         const std::uint32_t __chunks_per_segment =
@@ -119,11 +112,10 @@ struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_wor
 
         sycl::nd_range<1> __nd_range(std::size_t(__actual_group_count) * __hist_work_group_size, __hist_work_group_size);
         return __q.submit([&](sycl::handler& __cgh) {
-            sycl::local_accessor<std::uint32_t, 1> __slm_accessor(
-                _GlobalHistKernelT::__hist_buffer_size * __num_histograms, __cgh);
+            sycl::local_accessor<std::uint32_t, 1> __slm_accessor(_GlobalHistKernelT::__slm_size, __cgh);
             oneapi::dpl::__ranges::__require_access(__cgh, __keys_rng);
             __cgh.depends_on(__e);
-            _GlobalHistKernelT __kernel(__keys_rng, __slm_accessor, __global_offset_data, __num_histograms, __segments,
+            _GlobalHistKernelT __kernel(__keys_rng, __slm_accessor, __global_offset_data, __segments,
                                         __chunks_per_segment, __chunk_count, __chunks_per_group);
             __cgh.parallel_for<_Name...>(__nd_range, __kernel);
         });

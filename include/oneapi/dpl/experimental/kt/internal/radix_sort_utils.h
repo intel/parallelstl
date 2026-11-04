@@ -69,14 +69,22 @@ __check_sycl_sort_size([[maybe_unused]] std::size_t __n)
 }
 
 template <std::uint8_t __radix_bits, std::uint16_t __data_per_workitem, std::uint16_t __workgroup_size>
-inline void
-__check_sycl_sort_params(std::size_t __n)
+constexpr void
+__check_sycl_onesweep_kernel_params()
 {
-    static_assert(__radix_bits == 8);
-    static_assert(__workgroup_size == 1024 || __workgroup_size == 512);
+    static_assert(__radix_bits == 8, "The SYCL onesweep kernels currently require 8 radix bits");
+    static_assert(__workgroup_size == 1024 || __workgroup_size == 512,
+                  "The SYCL onesweep kernels currently require 512 or 1024 work-items in a work-group");
     // Bin counts within the onesweep kernel use 16-bit integers
     static_assert(std::uint32_t{__workgroup_size} * __data_per_workitem <= std::numeric_limits<std::uint16_t>::max(),
                   "The work-group tile size (work_group_size * data_per_work_item) must not exceed 65535");
+}
+
+template <std::uint8_t __radix_bits, std::uint16_t __data_per_workitem, std::uint16_t __workgroup_size>
+inline void
+__check_sycl_sort_params(std::size_t __n)
+{
+    __check_sycl_onesweep_kernel_params<__radix_bits, __data_per_workitem, __workgroup_size>();
     __check_sycl_sort_size(__n);
 }
 

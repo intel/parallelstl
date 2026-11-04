@@ -59,9 +59,8 @@ __check_batched_sort_config()
                   "Unsupported _SortConfig: only radix_many_groups_tag is currently implemented");
     if constexpr (__is_radix_many_groups_tag<_SortConfig>::value)
     {
-        static_assert(_SortConfig::radix_bits == 8, "radix_many_groups_tag currently requires 8 radix bits");
-        static_assert(_KernelParam::workgroup_size == 512 || _KernelParam::workgroup_size == 1024,
-                      "radix_many_groups_tag currently requires 512 or 1024 work-items in a work-group");
+        __check_sycl_onesweep_kernel_params<_SortConfig::radix_bits, _KernelParam::data_per_workitem,
+                                            _KernelParam::workgroup_size>();
     }
 }
 
