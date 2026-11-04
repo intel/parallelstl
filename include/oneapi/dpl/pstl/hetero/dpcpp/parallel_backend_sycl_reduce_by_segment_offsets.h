@@ -293,7 +293,8 @@ struct __segmented_reduce_flat_geometry
 
 // GPU, arithmetic types: each sub-group takes a piece of consecutive elements, finds its first segment by search and
 // reduces the segments with coalesced loads, writing whole ones. The partial head/tail segments are combined by a
-// second kernel; above a size, a work-group first combines its pieces in local memory. Tuned on GPUs.
+// second kernel; above a size, a work-group first combines its pieces in local memory. Tuned on GPUs. The search needs
+// sorted offsets: with unsorted ones (results unspecified) a segment may be met by no piece and left unwritten.
 struct __segmented_reduce_flat_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
@@ -858,7 +859,7 @@ struct __segmented_reduce_flat_submitter<
     }
 
     // Run of very short segments from __s, a lane each, up to the first longer one: reduced from op(init, first),
-    // empty ones written. Returns the run's segment count and its last segment's end.
+    // empty and reversed ones get the init. Returns the run's segment count and its last segment's end.
     template <typename _SubGroup, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     std::pair<std::uint32_t, _Size>
     __reduce_tiny_run(const _SubGroup __sg, const _InRange __input, const _OffsetRange __offsets,
@@ -879,7 +880,7 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __count = __dpl_sycl::__reduce_over_group(
             __sg, __run ? std::uint32_t(_Tuning::__sub_group_size) : __lane, sycl::minimum<std::uint32_t>());
 
-        if (__lane < __count && __mb == __me)
+        if (__lane < __count && __mb >= __me)
             __result[__mine] = __init_acc;
         if (__lane < __count && __mb < __me)
         {
