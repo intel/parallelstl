@@ -471,19 +471,22 @@ test_pieces()
 
     std::vector<std::int64_t> offsets{37};
     auto add = [&offsets](std::int64_t length) { offsets.push_back(offsets.back() + length); };
+    // The length up to the next multiple of unit, never zero: a whole unit when the last offset is one already, so the
+    // segment is not empty and still ends exactly at a boundary
+    auto to_boundary = [&offsets](std::int64_t unit) { return unit - offsets.back() % unit; };
     auto add_tiny = [&add](std::int64_t count) {
         for (std::int64_t i = 0; i < count; ++i)
             add(i % 4);
     };
     add_tiny(3000);
-    add(lane - offsets.back() % lane);
-    add(piece - offsets.back() % piece);
+    add(to_boundary(lane));
+    add(to_boundary(piece));
     add(1000000);
     add(0);
     add(0);
     add(0);
     add(7);
-    add(3 * piece + piece - offsets.back() % piece);
+    add(3 * piece + to_boundary(piece));
     add_tiny(100);
     EXPECT_EQ(num_segments, std::int64_t(offsets.size() - 1), "wrong number of segments in test_pieces");
     EXPECT_TRUE(offsets.back() < n, "the last offset of test_pieces is not below the end of the input");
