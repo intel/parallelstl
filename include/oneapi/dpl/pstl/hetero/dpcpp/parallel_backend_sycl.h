@@ -921,6 +921,13 @@ struct __early_exit_find_or
     static_assert(__max_iters_per_vote > 0 && (__max_iters_per_vote & (__max_iters_per_vote - 1)) == 0,
                   "the batch length doubles, so it must reach __max_iters_per_vote exactly");
 
+    template <typename _Range, std::size_t... __j>
+    static auto
+    __load_elems(const _Range& __rng, std::size_t __base, std::index_sequence<__j...>)
+    {
+        return std::array<std::decay_t<decltype(__rng[__base])>, sizeof...(__j)>{__rng[__base + __j]...};
+    }
+
     template <typename _NDItemId, typename _LocalFoundState, typename _BrickTag, typename... _Ranges>
     void
     operator()(const _NDItemId __item, const std::size_t __source_data_size, const std::size_t __iters_per_work_item,
@@ -967,31 +974,51 @@ struct __early_exit_find_or
                 const std::size_t __band = __backward ? __iters - 1 - __i : __i;
                 return __global_id * __elems_per_iter + __band * __stride;
             };
-            auto __scan = [&](std::size_t __idx) {
-                if (__pred(__idx, __rngs...))
+            // Records the match nearest the scan's start among an iteration's hits, bit __j being __base + __j.
+            // Recording only after every predicate has run keeps the iteration's loads adjacent, so they merge.
+            auto __record = [&](std::size_t __base, std::uint32_t __hits) {
+                if (__hits == 0)
+                    return false;
+                std::size_t __j = 0;
+                if constexpr (__backward)
                 {
-                    _BrickTag::__save_state_to(__found_local, __idx);
-                    return true;
+                    __j = __elems_per_iter - 1;
+                    while (!((__hits >> __j) & 1u))
+                        --__j;
                 }
-                return false;
+                else
+                {
+                    while (!((__hits >> __j) & 1u))
+                        ++__j;
+                }
+                _BrickTag::__save_state_to(__found_local, __base + __j);
+                return true;
             };
             auto __scan_iter = [&](std::size_t __i) {
                 const std::size_t __base = __iter_base(__i);
-                bool __found = false;
-                _ONEDPL_PRAGMA_UNROLL
-                for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
-                    __found |= __scan(__base + (__backward ? __elems_per_iter - 1 - __j : __j));
-                return __found;
+                // Each range is read before any predicate runs: interleaved reads of several ranges do not merge.
+                // The wide scan admits only single_match_pred, whose walk_n applies __f to element __idx of each.
+                const auto __vals =
+                    std::make_tuple(__load_elems(__rngs, __base, std::make_index_sequence<__elems_per_iter>{})...);
+                std::uint32_t __hits = 0;
+                std::apply(
+                    [&](const auto&... __v) {
+                        _ONEDPL_PRAGMA_UNROLL
+                        for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
+                            __hits |= std::uint32_t{__pred.__pred.__f(__v[__j]...)} << __j;
+                    },
+                    __vals);
+                return __record(__base, __hits);
             };
             auto __scan_iter_guarded = [&](std::size_t __i) {
                 const std::size_t __base = __iter_base(__i);
-                bool __found = false;
+                std::uint32_t __hits = 0;
                 for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
                 {
-                    const std::size_t __idx = __base + (__backward ? __elems_per_iter - 1 - __j : __j);
-                    __found |= __idx < __source_data_size && __scan(__idx);
+                    const std::size_t __idx = __base + __j;
+                    __hits |= std::uint32_t{__idx < __source_data_size && __pred(__idx, __rngs...)} << __j;
                 }
-                return __found;
+                return __record(__base, __hits);
             };
 
             bool __something_was_found = false;
