@@ -3,19 +3,26 @@ name: oneDPL CI Testing
 on:
   push:
     branches: [main]
-  pull_request:
-    branches:
-      - main
-      - 'release/**'
-    paths:
-      - '.github/**/*'
-      - 'cmake/**/*'
-      - 'include/**/*'
-      - 'test/**/*'
-      - 'CMakeLists.txt'
-      - '.clang-format'
-      - 'examples/**/*'
+  # PRs are tested on demand: see ci-on-demand.yml, which dispatches this workflow with the inputs below.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to report the result to as a commit status (optional)'
+        required: false
+        type: string
+        default: ''
+      sha:
+        description: 'Commit SHA to test; required with pr_number (defaults to the dispatch ref)'
+        required: false
+        type: string
+        default: ''
+      base_sha:
+        description: 'PR base commit SHA; enables the clang-format check of the changed lines (optional)'
+        required: false
+        type: string
+        default: ''
 
+run-name: ${{ inputs.pr_number != '' && format('oneDPL CI Testing for PR #{0} ({1})', inputs.pr_number, inputs.sha) || '' }}
 
 permissions: read-all
 
@@ -30,25 +37,56 @@ env:
   VS2022_PATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !contains(github.ref, 'refs/heads/main') }}
+  group: ${{ github.workflow }}-${{ inputs.pr_number != '' && format('pr-{0}', inputs.pr_number) || github.ref }}
+  # Only a newer on-demand run for the same PR supersedes an in-progress one.
+  cancel-in-progress: ${{ inputs.pr_number != '' }}
 
 jobs:
-  clang-format:
-    if: github.event_name == 'pull_request'
+  # Reports a pending commit status on the tested PR commit so the run shows up in the PR checks.
+  report-start:
+    if: github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          SHA: ${{ inputs.sha }}
+        with:
+          script: |
+            const sha = process.env.SHA;
+            if (!/^[0-9a-f]{40}$/.test(sha)) {
+              core.setFailed(`A full commit SHA is required with pr_number, got '${sha}'.`);
+              return;
+            }
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha, state: 'pending', context: 'oneDPL CI Testing (on demand)',
+              description: 'Running',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+  clang-format:
+    if: github.event_name == 'workflow_dispatch' && inputs.base_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref:  ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
       - name: Get clang-format
         run: sudo apt-get install -yqq clang-format
       - name: Applying clang-format for changed files
-        run: .github/scripts/clang-format-diff.sh ${{ github.event.pull_request.head.sha }} ${{ github.event.pull_request.base.sha }}
+        env:
+          HEAD_SHA: ${{ inputs.sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid SHA inputs"; exit 1; }
+          .github/scripts/clang-format-diff.sh "$HEAD_SHA" "$BASE_SHA"
       - name: Creating diff
         run: git diff > clang-format.diff
       - name: Checking if diff is empty
@@ -161,6 +199,8 @@ jobs:
             device_type: HOST
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.sha }}
       - name: Set up Intel® oneAPI
         uses: ./.github/actions/setup-linux-oneapi
         with:
@@ -236,6 +276,8 @@ jobs:
             device_type: cpu
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.sha }}
       - name: Set up Intel® oneAPI
         uses: ./.github/actions/setup-windows-oneapi
         with:
@@ -267,6 +309,8 @@ jobs:
       BUILD_TYPE: release
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.sha }}
       - name: Set up Intel® oneAPI
         uses: ./.github/actions/setup-linux-oneapi
         with:
@@ -290,6 +334,8 @@ jobs:
       BUILD_TYPE: release
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.sha }}
       - name: Set up Intel® oneAPI
         uses: ./.github/actions/setup-windows-oneapi
         with:
@@ -321,6 +367,8 @@ jobs:
             backend: omp
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.sha }}
       - name: Install OpenMP for Clang++
         run: |
           brew install libomp
@@ -344,3 +392,48 @@ jobs:
 
           python ${GITHUB_WORKSPACE}/.github/scripts/job_summary.py --build-log build.log --ctest-log ctest.log \
                                                                    --output-file summary.md --compiler ${{ matrix.cxx_compiler }}
+
+  # Reports the final result of an on-demand run to the tested PR commit.
+  report-result:
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
+    needs: [report-start, clang-format, linux-testing, windows-testing, linux-examples-testing, windows-examples-testing, macos-testing]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          SHA: ${{ inputs.sha }}
+          NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const sha = process.env.SHA;
+            if (!/^[0-9a-f]{40}$/.test(sha))
+              return;
+            const STATUS_CONTEXT = 'oneDPL CI Testing (on demand)';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // Do not overwrite the status if a newer run (or request) for this commit has taken it over,
+            // e.g. when this run was cancelled because the button was clicked again.
+            const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({ ...context.repo, ref: sha, per_page: 100 });
+            const latest = statuses.find(st => st.context === STATUS_CONTEXT);
+            if (latest && latest.target_url !== runUrl) {
+              core.notice(`Status is owned by ${latest.target_url}; not overwriting.`);
+              return;
+            }
+
+            const needs = JSON.parse(process.env.NEEDS);
+            // clang-format only runs when a base SHA was provided; a skip there is not an error.
+            if (needs['clang-format']?.result === 'skipped')
+              delete needs['clang-format'];
+            const results = Object.values(needs).map(n => n.result);
+            let state = 'success', description = 'All jobs passed';
+            if (results.includes('failure')) {
+              state = 'failure'; description = 'Some jobs failed';
+            } else if (results.some(r => r !== 'success')) {
+              state = 'error'; description = 'Run was cancelled or jobs were skipped';
+            }
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha, state, context: STATUS_CONTEXT, description, target_url: runUrl,
+            });

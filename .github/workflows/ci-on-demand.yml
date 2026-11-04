@@ -1,0 +1,139 @@
+name: oneDPL CI On Demand
+
+# Maintains a "Run public CI" checkbox at the bottom of every PR description.
+# When a user with write access checks it, this workflow dispatches "oneDPL CI Testing"
+# (ci-testing.yml) for the PR head commit and resets the checkbox so it can be used again.
+# Results are reported back to the PR as a commit status on the tested commit.
+#
+# Security notes:
+# - pull_request_target runs in the context of the base repository; this workflow never checks out
+#   or executes PR code. The PR body is untrusted and is only handled as data inside github-script.
+# - The commit SHA that was current when the box was checked is pinned and passed to the dispatched
+#   run, so commits pushed after approval are not tested without a new approval.
+# - Edits made with GITHUB_TOKEN do not trigger workflows, so resetting the checkbox cannot loop.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize]
+    branches:
+      - main
+      - 'release/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  ci-button:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write        # dispatch ci-testing.yml
+      pull-requests: write  # update the PR description
+      statuses: write       # report the pending status on the PR commit
+    steps:
+      - name: Maintain button and launch CI on request
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const START = '<!-- onedpl-ci-button:start -->';
+            const END = '<!-- onedpl-ci-button:end -->';
+            const LABEL = '**Run public CI**';
+            const CI_WORKFLOW = 'ci-testing.yml';
+            const STATUS_CONTEXT = 'oneDPL CI Testing (on demand)';
+            const { owner, repo } = context.repo;
+            const payload = context.payload;
+            const prNumber = payload.pull_request.number;
+
+            const button = (checked) => [
+              START,
+              '',
+              '---',
+              `- [${checked ? 'x' : ' '}] ${LABEL} on the latest commit of this PR ` +
+                '(requires write access; the box resets once the run is launched and results appear in the checks below)',
+              END,
+            ].join('\n');
+
+            const findBlock = (body) => {
+              const s = body.indexOf(START);
+              const e = body.indexOf(END, s);
+              return (s < 0 || e < 0) ? null : { s, e: e + END.length };
+            };
+            const isChecked = (body) => {
+              const b = findBlock(body || '');
+              return !!b && /-\s*\[[xX]\]\s*\*\*Run public CI\*\*/.test(body.slice(b.s, b.e));
+            };
+            const withUncheckedButton = (body) => {
+              body = body || '';
+              const b = findBlock(body);
+              if (b)
+                return body.slice(0, b.s) + button(false) + body.slice(b.e);
+              return (body.trimEnd() ? body.trimEnd() + '\n\n' : '') + button(false) + '\n';
+            };
+
+            // 1. Detect a click: the box went from unchecked (or absent) to checked in this edit.
+            const requested = payload.action === 'edited' &&
+                              payload.changes?.body !== undefined &&
+                              isChecked(payload.pull_request.body) &&
+                              !isChecked(payload.changes.body.from);
+
+            if (requested) {
+              const actor = payload.sender.login;
+              let permission = 'none';
+              try {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: actor });
+                permission = data.permission;
+              } catch (e) {
+                core.info(`Permission lookup for ${actor} failed: ${e.message}`);
+              }
+
+              if (payload.pull_request.state !== 'open') {
+                core.notice('PR is not open; ignoring CI request.');
+              } else if (!['admin', 'write'].includes(permission)) {
+                core.notice(`${actor} has '${permission}' access; write access is required to launch CI.`);
+              } else {
+                const pr = payload.pull_request;
+                const sha = pr.head.sha;
+                const workflowUrl = `${context.serverUrl}/${owner}/${repo}/actions/workflows/${CI_WORKFLOW}` +
+                                    '?query=event%3Aworkflow_dispatch';
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha, state: 'pending', context: STATUS_CONTEXT,
+                  description: `Requested by @${actor}, waiting to start`, target_url: workflowUrl,
+                });
+
+                // Same-repo PRs dispatch on the PR branch so changes to the CI workflow itself are exercised.
+                // Fork branches do not exist in this repository, so they use the workflow from the base branch.
+                const refs = pr.head.repo?.full_name === `${owner}/${repo}` ? [pr.head.ref, pr.base.ref] : [pr.base.ref];
+                let dispatched = false;
+                for (const ref of refs) {
+                  try {
+                    await github.rest.actions.createWorkflowDispatch({
+                      owner, repo, workflow_id: CI_WORKFLOW, ref,
+                      inputs: { pr_number: String(prNumber), sha, base_sha: pr.base.sha },
+                    });
+                    core.notice(`Dispatched ${CI_WORKFLOW} on ref '${ref}' for ${sha} (requested by ${actor}).`);
+                    dispatched = true;
+                    break;
+                  } catch (e) {
+                    core.warning(`Dispatch on ref '${ref}' failed: ${e.message}`);
+                  }
+                }
+                if (!dispatched) {
+                  await github.rest.repos.createCommitStatus({
+                    owner, repo, sha, state: 'error', context: STATUS_CONTEXT,
+                    description: 'Failed to launch CI', target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                  });
+                  core.setFailed('Could not dispatch the CI workflow.');
+                }
+              }
+            }
+
+            // 2. Make sure the description ends with an unchecked button (adds it, or resets it after a click).
+            //    Re-read the description so concurrent edits are not overwritten.
+            const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const newBody = withUncheckedButton(current.body);
+            if (newBody !== (current.body || '')) {
+              await github.rest.pulls.update({ owner, repo, pull_number: prNumber, body: newBody });
+            }
