@@ -69,6 +69,8 @@ struct __segmented_reduce_variable_brick
         const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx], __n);
         const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx + 1], __n);
 
+        // A reversed segment has a negative length, so it is short and its serial reduce gives the init
+        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
         if (__end - __begin > __threshold)
         {
             using __atomic_ref_t =
@@ -149,7 +151,8 @@ struct __segmented_reduce_length
         const _Size __b = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__begin, __n);
         const _Size __e = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__end, __n);
 
-        return __b < __e ? __e - __b : _Size{0};
+        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
+        return std::max<_Size>(0, __e - __b);
     }
 };
 
@@ -211,6 +214,7 @@ struct __segmented_reduce_chunk_brick
         const _Size __first_chunk = __lo == 0 ? _Size{0} : _Size(__chunk_ends[__lo - 1]);
         const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo], __n);
         const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo + 1], __n);
+
         // First chunk length: the remainder after the full chunks, in [1, __chunk_size]
         const _Size __head = (__end - __begin) - (_Size(__chunk_ends[__lo]) - __first_chunk - 1) * __chunk_size;
 
@@ -495,6 +499,8 @@ struct __segmented_reduce_flat_submitter<
     {
         // Accumulators in __lazy_ctor_storage are never destroyed: arithmetic types only
         static_assert(std::is_trivially_destructible_v<_Acc>);
+        // A reversed segment has a negative length, so it is tiny; the search steps may go below zero before clamping
+        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
         constexpr std::size_t __sub_group_size = _Tuning::__sub_group_size;
         const __segmented_reduce_flat_geometry __geometry =
             _Tuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
@@ -730,6 +736,7 @@ struct __segmented_reduce_flat_submitter<
     static bool
     __is_tiny(const _Size __b, const _Size __e, const _Size __piece_begin, const _Size __piece_end)
     {
+        // A reversed segment in the piece has a negative length, so it is tiny
         return __b >= __piece_begin && __e <= __piece_end && __e - __b <= _Size(_Tuning::__tiny_segment);
     }
 
@@ -1291,6 +1298,9 @@ struct __parallel_reduce_by_segment_offsets
                _OutRange&& __result, const _Size __n, const _Size __m, _InitType __init,
                _BinaryOperation __binary_op) const
     {
+        // Segment lengths and index steps may go negative before they are clamped
+        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
+
         // __pattern_reduce_by_segment_offsets returns for no segments and fills the results of an empty input
         assert(__n > 0 && __m > 0);
 
