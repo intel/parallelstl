@@ -1334,17 +1334,20 @@ struct __parallel_reduce_by_segment_offsets
         {
             // Long average segment: all in chunks, chunk length from the longest on GPUs; chunkless segments get init
             const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
-            // Every segment empty: only the init to write
-            if (__max_length == 0)
+            if (__max_length > 0)
             {
-                // Own kernel name: the fill of an empty input has another result range
+                __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
+                                   __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
+            }
+            else
+            {
+                // Every segment empty: only the init to write
+                // Own kernel name: the empty-input fill has the default one with other template arguments
                 __parallel_reduce_by_segment_offsets_fill<_Acc>(
                     _BackendTag{}, make_wrapped_policy<__segmented_reduce_all_empty_wrapper>(__exec), __result, __m,
                     __init);
-                return;
             }
-            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
-                               __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
+
             return;
         }
 
