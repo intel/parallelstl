@@ -902,6 +902,16 @@ __is_backward_tag(_TagType)
 // early_exit (find_or)
 //------------------------------------------------------------------------
 
+template <typename _Pred>
+struct __is_adjacent_match : std::false_type
+{
+};
+
+template <typename _Pred>
+struct __is_adjacent_match<oneapi::dpl::unseq_backend::adjacent_match_pred<_Pred>> : std::true_type
+{
+};
+
 // With __wide, each work item reads several contiguous elements per iteration and votes less often: fewer,
 // wider loads per element, at the cost of more registers and of scanning a little past a match.
 template <typename _Pred, bool __wide>
@@ -979,6 +989,11 @@ struct __early_exit_find_or
             auto __record = [&](std::size_t __base, std::uint32_t __hits) {
                 if (__hits == 0)
                     return false;
+                if constexpr (std::is_same_v<_BrickTag, __parallel_or_tag>)
+                {
+                    _BrickTag::__save_state_to(__found_local, __base);
+                    return true;
+                }
                 std::size_t __j = 0;
                 if constexpr (__backward)
                 {
@@ -996,18 +1011,30 @@ struct __early_exit_find_or
             };
             auto __scan_iter = [&](std::size_t __i) {
                 const std::size_t __base = __iter_base(__i);
-                // Each range is read before any predicate runs: interleaved reads of several ranges do not merge.
-                // The wide scan admits only single_match_pred, whose walk_n applies __f to element __idx of each.
-                const auto __vals =
-                    std::make_tuple(__load_elems(__rngs, __base, std::make_index_sequence<__elems_per_iter>{})...);
                 std::uint32_t __hits = 0;
-                std::apply(
-                    [&](const auto&... __v) {
-                        _ONEDPL_PRAGMA_UNROLL
-                        for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
-                            __hits |= std::uint32_t{__pred.__pred.__f(__v[__j]...)} << __j;
-                    },
-                    __vals);
+                if constexpr (__is_adjacent_match<_Pred>::value)
+                {
+                    // One read of __elems_per_iter + 1 elements covers every pair of the iteration.
+                    const auto __v = __load_elems(__rngs..., __base, std::make_index_sequence<__elems_per_iter + 1>{});
+                    _ONEDPL_PRAGMA_UNROLL
+                    for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
+                        __hits |= std::uint32_t{__pred.__pred(__v[__j], __v[__j + 1])} << __j;
+                }
+                else
+                {
+                    // Each range is read before any predicate runs: interleaved reads of several ranges do not
+                    // merge. The wide scan admits only single_match_pred here, whose walk_n applies __f to element
+                    // __idx of each range.
+                    const auto __vals =
+                        std::make_tuple(__load_elems(__rngs, __base, std::make_index_sequence<__elems_per_iter>{})...);
+                    std::apply(
+                        [&](const auto&... __v) {
+                            _ONEDPL_PRAGMA_UNROLL
+                            for (std::size_t __j = 0; __j < __elems_per_iter; ++__j)
+                                __hits |= std::uint32_t{__pred.__pred.__f(__v[__j]...)} << __j;
+                        },
+                        __vals);
+                }
                 return __record(__base, __hits);
             };
             auto __scan_iter_guarded = [&](std::size_t __i) {
@@ -1116,6 +1143,12 @@ struct __brick_reads_one_elem_per_range : std::false_type
 // single_match_pred applies its predicate through walk_n, i.e. to element __idx of each range.
 template <typename _Pred>
 struct __brick_reads_one_elem_per_range<oneapi::dpl::unseq_backend::single_match_pred<_Pred>> : std::true_type
+{
+};
+
+// adjacent_match_pred reads elements __idx and __idx + 1 of its one range: still contiguous.
+template <typename _Pred>
+struct __brick_reads_one_elem_per_range<oneapi::dpl::unseq_backend::adjacent_match_pred<_Pred>> : std::true_type
 {
 };
 
