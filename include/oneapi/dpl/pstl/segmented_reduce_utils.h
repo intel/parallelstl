@@ -10,10 +10,10 @@
 #ifndef _ONEDPL_SEGMENTED_REDUCE_UTILS_H
 #define _ONEDPL_SEGMENTED_REDUCE_UTILS_H
 
-#include <functional>
-#include <iterator>
-#include <type_traits>
-#include <utility>
+#include <functional>  // std::invoke
+#include <iterator>    // std::iterator_traits
+#include <type_traits> // std::decay_t, std::invoke_result_t, std::common_type_t, std::make_unsigned_t, ...
+#include <utility>     // std::move, std::forward
 
 #include "onedpl_config.h"
 

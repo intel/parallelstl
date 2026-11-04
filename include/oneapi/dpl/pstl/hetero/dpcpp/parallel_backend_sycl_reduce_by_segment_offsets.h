@@ -10,14 +10,14 @@
 #ifndef _ONEDPL_PARALLEL_BACKEND_SYCL_REDUCE_BY_SEGMENT_OFFSETS_H
 #define _ONEDPL_PARALLEL_BACKEND_SYCL_REDUCE_BY_SEGMENT_OFFSETS_H
 
-#include <algorithm>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <limits>
-#include <type_traits>
-#include <utility>
+#include <algorithm>   // std::min, std::clamp
+#include <cmath>       // std::sqrt
+#include <cstddef>     // std::size_t
+#include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t
+#include <functional>  // std::invoke, std::plus
+#include <limits>      // std::numeric_limits
+#include <type_traits> // std::true_type
+#include <utility>     // std::move, std::forward
 
 #include "sycl_defs.h"
 #include "parallel_backend_sycl.h"
