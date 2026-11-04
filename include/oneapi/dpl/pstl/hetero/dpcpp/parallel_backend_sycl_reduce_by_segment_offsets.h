@@ -1253,6 +1253,256 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
     }
 };
 
+// GPU, arithmetic types, an average segment of at least a sub-group: a work-group per slice, the part of one segment of
+// at most a tile of T elements (the segment-aligned assignment): segment k takes the work-groups [f(k - 1), f(k)) with
+// f(k) = ceil((end(k) - begin(0)) / T) + k + 1, at most ceil(n / T) + m work-groups for any lengths, and as T is not
+// above the average segment, m <= n / T: at most twice the tiles. A segment of one slice is written by its work-group;
+// a longer one leaves a partial result per slice, combined by a second kernel. Tuned on GPUs.
+struct __segmented_reduce_slice_tuning
+{
+    static constexpr std::size_t __sub_group_size = 32;
+    static constexpr std::size_t __work_group_size_limit = 256;
+    static constexpr std::size_t __max_inputs_per_item = 16;
+    static constexpr std::size_t __combine_work_group_size = 256;
+
+    // Up to this many elements; above, the flat path keeps the device busy as well. Positions fit in 32 bits.
+    static constexpr std::size_t __max_input = std::size_t(1) << 24;
+    static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
+
+    static bool
+    __applies(const std::size_t __n, const std::size_t __m)
+    {
+        return __n <= __max_input && __n / __m >= __sub_group_size;
+    }
+
+    // The tile: the largest power of two not above the average segment, from a sub-group up to the work-group times
+    // the most elements per work-item; the work-group: the tile, up to the limit
+    static std::pair<std::size_t, std::size_t>
+    __geometry(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
+    {
+        const std::size_t __max_size =
+            std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
+                                           __sub_group_size * __sub_group_size);
+        const std::size_t __average = __n / __m;
+
+        std::size_t __tile = __sub_group_size;
+        while (__tile * 2 <= __average && __tile * 2 <= __max_size * __max_inputs_per_item)
+            __tile *= 2;
+
+        return {std::min(__tile, __max_size), __tile};
+    }
+};
+
+template <typename... _Name>
+class __segmented_reduce_slice_kernel;
+
+template <typename... _Name>
+class __segmented_reduce_slice_combine_kernel;
+
+template <typename _Acc, typename _KernelName, typename _CombineName, typename _InitType, typename _BinaryOperation,
+          typename _Tuning>
+struct __segmented_reduce_slice_submitter;
+
+template <typename _Acc, typename... _Name, typename... _CombineName, typename _InitType, typename _BinaryOperation,
+          typename _Tuning>
+struct __segmented_reduce_slice_submitter<_Acc, __internal::__optional_kernel_name<_Name...>,
+                                          __internal::__optional_kernel_name<_CombineName...>, _InitType,
+                                          _BinaryOperation, _Tuning>
+{
+    static_assert(std::is_arithmetic_v<_Acc>, "the work-group per slice path takes arithmetic accumulators only");
+
+    _InitType __init;
+    mutable _BinaryOperation __binary_op;
+
+    // The first work-group of segment k, f(k - 1) = ceil((begin(k) - begin(0)) / T) + k, and its number of slices; for
+    // unsorted offsets the values are clamped so that no access leaves the bounds
+    template <typename _OffsetRange, typename _Size>
+    static std::pair<std::uint32_t, std::uint32_t>
+    __slices_of(const _OffsetRange __offsets, const _Size __n, const _Size __start, const std::uint32_t __k,
+                const std::uint32_t __tile)
+    {
+        const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k], __n);
+        const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k + 1], __n);
+        const std::uint32_t __before = std::uint32_t(std::max<_Size>(0, __begin - __start));
+        const std::uint32_t __length = std::uint32_t(std::max<_Size>(0, __end - __begin));
+        return {oneapi::dpl::__internal::__dpl_ceiling_div(__before, __tile) + __k,
+                std::max<std::uint32_t>(1, oneapi::dpl::__internal::__dpl_ceiling_div(__length, __tile))};
+    }
+
+    template <typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
+    void
+    operator()(sycl::queue& __q, _InRange&& __input, _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n,
+               const _Size __m) const
+    {
+        constexpr std::uint32_t __sub_group_size = _Tuning::__sub_group_size;
+        const std::pair<std::size_t, std::size_t> __geometry =
+            _Tuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
+        const std::uint32_t __work_group_size = __geometry.first;
+        const std::uint32_t __tile = __geometry.second;
+        const std::uint32_t __sub_groups = __work_group_size / __sub_group_size;
+        const std::uint32_t __num_groups =
+            oneapi::dpl::__internal::__dpl_ceiling_div(std::uint32_t(__n), __tile) + std::uint32_t(__m);
+        const _Acc __init_acc = __segmented_reduce_to_acc<_Acc>(__init);
+
+        __device_storage<_Acc> __partials_storage{__q, __num_groups};
+
+        sycl::event __event = __q.submit([&](sycl::handler& __cgh) {
+            oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
+            auto __partials_acc = __get_accessor(sycl::write_only, __partials_storage, __cgh, __dpl_sycl::__no_init{});
+            __dpl_sycl::__local_accessor<_Acc> __loc_partials_acc(sycl::range<1>(__sub_groups), __cgh);
+
+            __cgh.parallel_for<_Name...>(
+                sycl::nd_range<1>(sycl::range<1>(std::size_t(__num_groups) * __work_group_size),
+                                  sycl::range<1>(__work_group_size)),
+                [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
+                    const std::uint32_t __group = __item.get_group(0);
+                    const std::uint32_t __lid = __item.get_local_id(0);
+                    const _Size __start = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[0], __n);
+
+                    // The segment of the work-group: the first k with f(k) > group, uniform across the work-group
+                    std::uint32_t __lo = 0, __hi = std::uint32_t(__m);
+                    while (__lo < __hi)
+                    {
+                        const std::uint32_t __mid = __lo + (__hi - __lo) / 2;
+                        const _Size __mid_end =
+                            oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__mid + 1], __n);
+                        const std::uint32_t __f = oneapi::dpl::__internal::__dpl_ceiling_div(
+                                                      std::uint32_t(std::max<_Size>(0, __mid_end - __start)), __tile) +
+                                                  __mid + 1;
+                        if (__f > __group)
+                            __hi = __mid;
+                        if (__f <= __group)
+                            __lo = __mid + 1;
+                    }
+                    const std::uint32_t __k = __lo;
+                    if (__k >= std::uint32_t(__m))
+                        return;
+
+                    const std::pair<std::uint32_t, std::uint32_t> __s =
+                        __slices_of(__offsets, __n, __start, __k, __tile);
+                    const std::uint32_t __first_group = __s.first;
+                    const std::uint32_t __slices = __s.second;
+                    // Work-groups past the slices of their segment are idle
+                    if (__group < __first_group || __group - __first_group >= __slices)
+                        return;
+                    const std::uint32_t __slice = __group - __first_group;
+
+                    const _Size __begin =
+                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k], __n);
+                    const _Size __end =
+                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__k + 1], __n);
+                    if (__begin >= __end)
+                    {
+                        if (__lid == 0)
+                            __result[__k] = __init_acc;
+                        return;
+                    }
+
+                    // Work-item 0 of the first slice starts from op(init, first); one past the slice length starts
+                    // from the first element, skipped by the combinations below
+                    const _Size __slice_begin = __begin + _Size(__slice) * _Size(__tile);
+                    const std::uint32_t __length = std::uint32_t(std::min<_Size>(__tile, __end - __slice_begin));
+                    const std::uint32_t __first = __lid < __length ? __lid : 0;
+                    _Acc __acc = __lid == 0 && __slice == 0
+                                     ? __segmented_reduce_to_acc<_Acc>(
+                                           std::invoke(__binary_op, __init, __input[__slice_begin]))
+                                     : __segmented_reduce_to_acc<_Acc>(__input[__slice_begin + __first]);
+                    for (std::uint32_t __i = __lid + __work_group_size; __i < __length; __i += __work_group_size)
+                        __acc = std::invoke(__binary_op, __acc, __input[__slice_begin + __i]);
+
+                    const auto __sg = __item.get_sub_group();
+                    const std::uint32_t __sg_id = __sg.get_group_linear_id();
+                    const std::uint32_t __items = std::min(__length, __work_group_size);
+                    const std::uint32_t __sg_first = __sg_id * __sub_group_size;
+                    const std::uint32_t __active =
+                        __items > __sg_first ? std::min(__sub_group_size, __items - __sg_first) : 0;
+                    __acc = __segmented_reduce_lanes<_Acc>(__sg, __acc, __active, __binary_op);
+
+                    // Uniform across the work-group, as the barrier needs
+                    const std::uint32_t __active_sub_groups =
+                        oneapi::dpl::__internal::__dpl_ceiling_div(__items, __sub_group_size);
+                    if (__active_sub_groups > 1)
+                    {
+                        if (__active > 0 && __sg.get_local_linear_id() == 0)
+                            __loc_partials_acc[__sg_id] = __acc;
+
+                        sycl::group_barrier(__item.get_group());
+
+                        if (__sg_id == 0)
+                        {
+                            const std::uint32_t __lane = __sg.get_local_linear_id();
+                            // Inactive lanes read slot 0 to stay in bounds; their values are not used
+                            __acc = __segmented_reduce_lanes<_Acc>(
+                                __sg, __loc_partials_acc[__lane < __active_sub_groups ? __lane : 0],
+                                __active_sub_groups, __binary_op);
+                        }
+                    }
+
+                    if (__lid == 0 && __slices == 1)
+                        __result[__k] = __acc;
+                    if (__lid == 0 && __slices > 1)
+                        __partials_acc.__data()[__group] = __acc;
+                });
+        });
+
+        // The partial results of the segments of several slices, a sub-group per segment; none when no segment can
+        // exceed a tile
+        if (std::size_t(__n) > __tile)
+        {
+            constexpr std::uint32_t __combine_work_group_size = _Tuning::__combine_work_group_size;
+            constexpr std::uint32_t __combine_sub_groups = __combine_work_group_size / __sub_group_size;
+            const std::size_t __combine_groups =
+                oneapi::dpl::__internal::__dpl_ceiling_div(std::size_t(__m), std::size_t(__combine_sub_groups));
+
+            __event = __q.submit([&](sycl::handler& __cgh) {
+                oneapi::dpl::__ranges::__require_access(__cgh, __offsets, __result);
+                auto __partials_acc = __get_accessor(sycl::read_only, __partials_storage, __cgh);
+
+                __cgh.depends_on(__event);
+
+                __cgh.parallel_for<_CombineName...>(
+                    sycl::nd_range<1>(sycl::range<1>(__combine_groups * __combine_work_group_size),
+                                      sycl::range<1>(__combine_work_group_size)),
+                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
+                        const auto __sg = __item.get_sub_group();
+                        const std::uint32_t __lane = __sg.get_local_linear_id();
+                        const std::uint32_t __k =
+                            __item.get_group(0) * __combine_sub_groups + __sg.get_group_linear_id();
+                        if (__k >= std::uint32_t(__m))
+                            return;
+
+                        const _Size __start =
+                            oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[0], __n);
+                        const std::pair<std::uint32_t, std::uint32_t> __s =
+                            __slices_of(__offsets, __n, __start, __k, __tile);
+                        const std::uint32_t __first_group = __s.first;
+                        const std::uint32_t __slices = __s.second;
+                        if (__slices == 1)
+                            return;
+
+                        // A slot past the work-groups only for unsorted offsets: the first slot instead
+                        const _Acc* const __partials = __partials_acc.__data();
+                        auto __slot = [=](const std::uint32_t __j) {
+                            const std::uint32_t __g = __first_group + __j;
+                            return __g < __num_groups ? __g : 0;
+                        };
+                        // Lanes past the slices start from the first one, which the combination below skips
+                        _Acc __acc = __partials[__slot(__lane < __slices ? __lane : 0)];
+                        for (std::uint32_t __j = __lane + __sub_group_size; __j < __slices; __j += __sub_group_size)
+                            __acc = std::invoke(__binary_op, __acc, __partials[__slot(__j)]);
+                        __acc = __segmented_reduce_lanes<_Acc>(
+                            __sg, __acc, std::min<std::uint32_t>(__slices, __sub_group_size), __binary_op);
+                        if (__lane == 0)
+                            __result[__k] = __acc;
+                    });
+            });
+        }
+
+        // Wait: the algorithm has no asynchronous interface, and the temporary storage is released on return
+        __event.wait_and_throw();
+    }
+};
+
 // Whether a temporary storage is a SYCL buffer, whose accessors order the kernels using it
 template <typename _Storage>
 struct __segmented_reduce_is_buffer : std::false_type
@@ -1293,7 +1543,8 @@ __parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec
 // Reduces the segments of [0, __n) given by __m + 1 offsets into __m results
 template <typename _Acc, typename _ChunkTuning = __segmented_reduce_chunk_tuning,
           typename _FlatTuning = __segmented_reduce_flat_tuning,
-          typename _GroupTuning = __segmented_reduce_group_tuning>
+          typename _GroupTuning = __segmented_reduce_group_tuning,
+          typename _SliceTuning = __segmented_reduce_slice_tuning>
 struct __parallel_reduce_by_segment_offsets
 {
     template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
@@ -1321,6 +1572,8 @@ struct __parallel_reduce_by_segment_offsets
 
                 if (_GroupTuning::__applies(std::size_t(__n), std::size_t(__m)))
                     __reduce_by_groups<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
+                else if (_SliceTuning::__applies(std::size_t(__n), std::size_t(__m)))
+                    __reduce_by_slices<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
                 else
                     __reduce_flat<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
                 return;
@@ -1374,6 +1627,22 @@ struct __parallel_reduce_by_segment_offsets
             __segmented_reduce_group_submitter<_Acc, _GroupKernel, _InitType, _BinaryOperation, _GroupTuning>;
 
         _GroupSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
+    }
+
+    // GPU arithmetic types, an average segment of at least a sub-group: a work-group per slice of a segment
+    template <typename _CustomName, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size,
+              typename _InitType, typename _BinaryOperation>
+    static void
+    __reduce_by_slices(sycl::queue& __q, _InRange& __input, _OffsetRange& __offsets, _OutRange& __result,
+                       const _Size __n, const _Size __m, const _InitType& __init, const _BinaryOperation& __binary_op)
+    {
+        using _SliceKernel = __internal::__kernel_name_provider<__segmented_reduce_slice_kernel<_CustomName>>;
+        using _CombineKernel =
+            __internal::__kernel_name_provider<__segmented_reduce_slice_combine_kernel<_CustomName>>;
+        using _SliceSubmitter = __segmented_reduce_slice_submitter<_Acc, _SliceKernel, _CombineKernel, _InitType,
+                                                                   _BinaryOperation, _SliceTuning>;
+
+        _SliceSubmitter{__init, __binary_op}(__q, __input, __offsets, __result, __n, __m);
     }
 
     // Longest segment length on GPUs (selects the chunk length); __n on CPUs, where it does not matter
