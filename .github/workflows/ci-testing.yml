@@ -22,7 +22,7 @@ on:
         type: string
         default: ''
 
-run-name: ${{ inputs.pr_number != '' && format('oneDPL CI Testing for PR #{0} ({1})', inputs.pr_number, inputs.sha) || '' }}
+run-name: "${{ inputs.pr_number != '' && format('oneDPL CI Testing for PR #{0} ({1})', inputs.pr_number, inputs.sha) || '' }}"
 
 permissions: read-all
 
