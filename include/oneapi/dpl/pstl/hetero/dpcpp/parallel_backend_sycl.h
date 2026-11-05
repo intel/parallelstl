@@ -1128,7 +1128,7 @@ inline constexpr std::size_t __find_or_wide_scan_min_size = std::size_t{1} << 18
 
 // Widest element type the wide scan accepts.
 // empirical: 8-byte types were slower at all but the largest inputs on BMG and PVC
-inline constexpr std::size_t __find_or_wide_scan_max_elem_size = 4;
+inline constexpr std::size_t __find_or_wide_scan_max_elem_size = 8;
 
 // Whether the brick reads elements of each range at the scanned index that the wide scan can read in contiguous
 // blocks. A gather, or a loop over a second sequence, gains nothing from being unrolled.
