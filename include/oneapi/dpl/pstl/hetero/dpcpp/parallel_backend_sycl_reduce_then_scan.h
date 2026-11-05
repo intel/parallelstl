@@ -2420,8 +2420,8 @@ __parallel_transform_reduce_then_scan_impl(
     const std::uint32_t __work_group_size = (__max_work_group_size / __max_sub_group_size) * __max_sub_group_size;
 
     // use work groups to match the number of compute units
-    const std::uint32_t __max_compute_units =
-        __q.get_device().template get_info<sycl::info::device::max_compute_units>();
+    const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
+    const std::uint32_t __max_compute_units = __compute_units.__max_compute_units;
 
     std::size_t __inputs_remaining = __n;
     if constexpr (__is_unique_pattern_v)
@@ -2438,8 +2438,7 @@ __parallel_transform_reduce_then_scan_impl(
 
     if (__target_is_gpu)
     {
-        // Assume 8 compute units per GPU core
-        const std::uint32_t __num_xe_cores = std::max(1u, __max_compute_units / 8);
+        const std::uint32_t __num_xe_cores = __compute_units.__num_xe_cores;
         std::size_t __last_level_cache_size_bytes =
             __q.get_device().template get_info<sycl::info::device::global_mem_cache_size>();
         if (__last_level_cache_size_bytes == 0)

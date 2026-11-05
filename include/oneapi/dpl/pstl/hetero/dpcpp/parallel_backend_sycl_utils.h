@@ -19,7 +19,7 @@
 //!!! NOTE: This file should be included under the macro _ONEDPL_BACKEND_SYCL
 #include <array>
 #include <type_traits>
-#include <algorithm> // std::min, std::find
+#include <algorithm> // std::min, std::max, std::find
 #include <functional>
 #include <utility>
 #include <cstddef>
@@ -101,6 +101,23 @@ __max_compute_units(const sycl::queue& __q)
 {
     return __q.get_device().template get_info<sycl::info::device::max_compute_units>();
 }
+
+// The compute units of a device and, for GPUs, the number of its cores, to size a launch by either. A GPU core is
+// assumed to have 8 compute units, as on Xe-HPC and Xe2; on Xe-HPG and Xe-LP it has 16, so a launch sized by the
+// cores gets twice as many work-groups per core there
+struct __device_compute_units
+{
+    static constexpr std::uint32_t __compute_units_per_gpu_core = 8;
+
+    std::uint32_t __max_compute_units = 0;
+    std::uint32_t __num_xe_cores = 0;
+
+    explicit __device_compute_units(const sycl::queue& __q)
+        : __max_compute_units(oneapi::dpl::__internal::__max_compute_units(__q)),
+          __num_xe_cores(std::max(1u, __max_compute_units / __compute_units_per_gpu_core))
+    {
+    }
+};
 
 inline bool
 __supports_sub_group_size(const sycl::queue& __q, std::size_t __target_size)
