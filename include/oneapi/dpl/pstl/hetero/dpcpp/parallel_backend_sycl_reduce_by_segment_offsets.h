@@ -361,13 +361,6 @@ struct __segmented_reduce_flat_tuning
     // Min whole vectors for sub-group vector loads; shorter ranges go faster per element (alignment/head/tail cost)
     static constexpr std::size_t __min_vectors = 8;
 
-    // Interpolation refines the piece guess only with more segments than pieces; otherwise a step just adds a load
-    static int
-    __interpolation_steps(const std::size_t __m, const std::size_t __pieces)
-    {
-        return __m > __pieces ? 2 : 0;
-    }
-
     // Bands by average segment length (__n / __m). Short: a piece per HW thread, fewer elements per work-item for
     // small inputs so more sub-groups share them
     struct __short_segments
@@ -533,8 +526,6 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
         const __segment_estimate __estimate{(std::uint64_t(__m) << __fraction_bits) / std::uint64_t(__n),
                                             __fraction_bits};
 
-        const int __interpolation_steps = _Tuning::__interpolation_steps(std::size_t(__m), __num_pieces);
-
         // A sub-group per piece
         return __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
@@ -559,7 +550,7 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
 
                     if (__piece_begin < __piece_end)
                         __reduce_piece(__sg, __input, __offsets, __result, __n, __m, __piece_begin, __piece_end,
-                                       __estimate, __interpolation_steps, __parts);
+                                       __estimate, __parts);
 
                     __store_piece_parts(__lane, __piece, __m, __parts, __heads, __tails, __tail_segment_of);
                 });
@@ -615,24 +606,9 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
     // doubling steps bracket the answer, then binary search, so a close guess takes a few reads, not log2(__m)
     template <typename _Size, typename _OffsetRange>
     static _Size
-    __last_begin(const _OffsetRange __offsets, const _Size __m, const _Size __n, const _Size __v, _Size __guess,
-                 const __segment_estimate __estimate, const int __steps)
+    __last_begin(const _OffsetRange __offsets, const _Size __m, const _Size __n, const _Size __v, const _Size __guess)
     {
         auto __begins_after = [&](_Size __i) { return __segment_begin(__offsets, __i, __n) > __v; };
-
-        // Move the guess by the segments to __v assuming equal lengths nearby, within [0, __m - 1]; distance <= n + 1
-        for (int __step = 0; __step < __steps; ++__step)
-        {
-            const _Size __at = __segment_begin(__offsets, __guess, __n);
-            const std::uint64_t __g = __guess;
-            const _Size __next = _Size(__v >= __at ? std::min<std::uint64_t>(__g + __estimate(__v - __at), __m - 1)
-                                                   : __g - std::min<std::uint64_t>(__g, __estimate(__at - __v)));
-
-            if (__next == __guess)
-                break;
-
-            __guess = __next;
-        }
 
         // First segment beginning after __v is in [__lo, __hi]: all before __lo begin at or before it
         _Size __lo = 0, __hi = __m;
@@ -925,16 +901,14 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
     void
     __reduce_piece(const _SubGroup __sg, const _InRange __input, const _OffsetRange __offsets, const _OutRange __result,
                    const _Size __n, const _Size __m, const _Size __piece_begin, const _Size __piece_end,
-                   const __segment_estimate __estimate, const int __interpolation_steps,
-                   __piece_parts<_Size>& __parts) const
+                   const __segment_estimate __estimate, __piece_parts<_Size>& __parts) const
     {
         const _Acc __init_acc = __segmented_reduce_to_acc<_Acc>(__init);
         const bool __last_piece = __piece_end == __n;
         // Below __m, as __piece_begin is below __n
         const _Size __guess = _Size(__estimate(__piece_begin));
         // Signed _Size: __piece_begin - 1 and the result may be -1 for the first piece, raised to 0
-        _Size __s = std::max<_Size>(
-            0, __last_begin(__offsets, __m, __n, __piece_begin - 1, __guess, __estimate, __interpolation_steps));
+        _Size __s = std::max<_Size>(0, __last_begin(__offsets, __m, __n, __piece_begin - 1, __guess));
 
         for (; __s < __m; ++__s)
         {
