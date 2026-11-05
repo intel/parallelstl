@@ -270,22 +270,21 @@ struct __segmented_reduce_flat_tuning
 
     static constexpr std::size_t __work_group_size_limit = 256;
 
-    // Xe core: 8 compute units
-    static constexpr std::size_t __compute_units_per_core = 8;
-
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
 
-    // Launch for __n elements: twice as many work-groups as Xe cores, as in reduce-then-scan, elements per work-item
-    // within bounds, and work-groups halved (down to one sub-group) until there are at least two per Xe core
+    // Launch for __n elements: twice as many work-groups as GPU cores, as in reduce-then-scan, elements per work-item
+    // within bounds, and work-groups halved (down to one sub-group) until there are at least two per GPU core
     static __segmented_reduce_flat_geometry
     __geometry(const sycl::queue& __q, const std::size_t __n)
     {
         std::size_t __work_group_size =
             std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
                                            __sub_group_size * __sub_group_size);
-        const std::size_t __compute_units = oneapi::dpl::__internal::__max_compute_units(__q);
-        const std::size_t __min_groups = 2 * std::max<std::size_t>(1, __compute_units / __compute_units_per_core);
+        // use work groups to match the number of compute units: two per GPU core, as in reduce-then-scan
+        const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
+        const std::uint32_t __num_xe_cores = __compute_units.__num_xe_cores;
+        const std::size_t __min_groups = 2 * std::size_t{__num_xe_cores};
         const std::size_t __min_inputs = __n <= __small_input ? __min_inputs_per_item : __large_min_inputs_per_item;
         const std::size_t __inputs_per_item = std::clamp<std::size_t>(
             oneapi::dpl::__internal::__dpl_ceiling_div(__n, __min_groups * __work_group_size), __min_inputs,
