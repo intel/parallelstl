@@ -511,9 +511,6 @@ template <typename _GenInput, typename _KernelName>
 struct __partition_set_balanced_path_submitter;
 
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
-struct __segmented_reduce_variable_brick;
-
-template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_chunk_brick;
 
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
@@ -688,13 +685,6 @@ template <typename _GenInput, typename KernelName>
 struct sycl::is_device_copyable<_ONEDPL_SPECIALIZE_FOR(
     oneapi::dpl::__par_backend_hetero::__partition_set_balanced_path_submitter, _GenInput, KernelName)>
     : oneapi::dpl::__internal::__are_all_device_copyable<_GenInput>
-{
-};
-
-template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
-struct sycl::is_device_copyable<_ONEDPL_SPECIALIZE_FOR(
-    oneapi::dpl::__par_backend_hetero::__segmented_reduce_variable_brick, _Acc, _Size, _InitType, _BinaryOperation)>
-    : oneapi::dpl::__internal::__are_all_device_copyable<_Size, _InitType, _BinaryOperation>
 {
 };
 

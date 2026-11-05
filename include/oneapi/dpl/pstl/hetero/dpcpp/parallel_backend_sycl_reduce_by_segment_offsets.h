@@ -15,7 +15,6 @@
 #include <cstddef>     // std::size_t
 #include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t
 #include <functional>  // std::invoke, std::plus
-#include <limits>      // std::numeric_limits
 #include <type_traits> // std::integral_constant, std::conditional_t, std::enable_if_t, std::is_*_v, ...
 #include <utility>     // std::move, std::forward, std::declval, std::pair
 
@@ -45,70 +44,16 @@ __segmented_reduce_to_acc(_Value&& __value)
     return std::forward<_Value>(__value);
 }
 
-// One work-item per short segment; a long one only reports its length via atomic max, capped to 32 bits: the chunk
-// length takes only its square root and clamps it far below
-template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
-struct __segmented_reduce_variable_brick
-{
-    static constexpr std::uint8_t __iters_per_item = 1;
-
-    _Size __n = {};         // input size
-    _Size __threshold = {}; // longest short segment length
-    _InitType __init;
-    mutable _BinaryOperation __binary_op;
-
-    template <typename _IsFull, typename _Params, typename _Offsets, typename _Result, typename _Input,
-              typename _MaxLength>
-    void
-    operator()(_IsFull, const std::size_t __idx, _Params, _Offsets __offsets, _Result __result, _Input __input,
-               _MaxLength __max_length) const
-    {
-        static_assert(_Params::__vector_size == 1,
-                      "The brick operates with tuples which must be excluded from vectorizable types");
-
-        const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx], __n);
-        const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx + 1], __n);
-
-        // A reversed segment has a negative length, so it is short and its serial reduce gives the init
-        static_assert(std::is_signed_v<_Size>, "The size type must be signed");
-        if (__end - __begin > __threshold)
-        {
-            using __atomic_ref_t =
-                sycl::atomic_ref<std::uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>;
-
-            __atomic_ref_t __ref(__max_length[0]);
-            __ref.fetch_max(static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                static_cast<std::uint64_t>(__end - __begin), std::numeric_limits<std::uint32_t>::max())));
-        }
-        else
-        {
-            std::get<0>(__result[__idx]) =
-                oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(__input, __begin, __end, __init, __binary_op);
-        }
-    }
-};
-
 template <typename _Name>
 class __segmented_reduce_flat_tail_wrapper;
 
-// Short segment: one work-item; long: chunks per work-item, then combined by one work-item. Tuned on GPUs and CPUs
+// Every segment in chunks of a work-item each, then combined by a work-item per segment. Tuned on GPUs and CPUs
 struct __segmented_reduce_chunk_tuning
 {
-    // A segment up to this length is short
-    static constexpr std::size_t __gpu_short_segment_max = 512;
-    static constexpr std::size_t __cpu_short_segment_max = 32768;
-
     // GPU: best chunk ~ sqrt(longest segment), balancing both levels, within these bounds; CPU: hardly matters >1024
     static constexpr std::size_t __gpu_min_chunk_size = 64;
     static constexpr std::size_t __gpu_max_chunk_size = 16384;
     static constexpr std::size_t __cpu_chunk_size = 4096;
-
-    static std::size_t
-    __short_segment_max(bool __is_gpu)
-    {
-        return __is_gpu ? __gpu_short_segment_max : __cpu_short_segment_max;
-    }
 
     static std::size_t
     __chunk_size(bool __is_gpu, std::size_t __max_length)
@@ -142,13 +87,12 @@ struct __segmented_reduce_length
     }
 };
 
-// Chunks of a segment (0 if not longer than __min_length), scanned into chunk ends; __length - 1 >= 0 when used
+// Chunks of a segment (0 if empty), scanned into chunk ends; __length - 1 >= 0 when used
 template <typename _Size>
 struct __segmented_reduce_chunk_count
 {
     _Size __n = {};          // input size
     _Size __chunk_size = {}; // chunk length
-    _Size __min_length = {}; // segments not longer than this have no chunks
 
     template <typename _Bounds>
     _Size
@@ -156,7 +100,7 @@ struct __segmented_reduce_chunk_count
     {
         const _Size __length = __segmented_reduce_length<_Size>{__n}(std::get<1>(__bounds), std::get<0>(__bounds));
 
-        return __length > __min_length ? (__length - 1) / __chunk_size + 1 : _Size{0};
+        return __length > 0 ? (__length - 1) / __chunk_size + 1 : _Size{0};
     }
 };
 
@@ -227,8 +171,7 @@ struct __segmented_reduce_combine_brick
 {
     static constexpr std::uint8_t __iters_per_item = 1;
 
-    _Size __num_partials = {};  // number of computed partial results
-    bool __write_empty = false; // whether a segment without chunks gets the init; otherwise left as is
+    _Size __num_partials = {}; // number of computed partial results
     _InitType __init;
     mutable _BinaryOperation __binary_op;
 
@@ -242,19 +185,14 @@ struct __segmented_reduce_combine_brick
 
         const _Size __first = __idx == 0 ? _Size{0} : _Size(__chunk_ends[__idx - 1]);
 
-        // No chunks: empty, or short and already reduced. Unordered offsets may exceed the computed chunks:
-        // results unspecified
+        // No chunks: an empty segment gets the init. Unordered offsets may exceed the computed chunks: results
+        // unspecified
         const _Size __last = std::min<_Size>(__chunk_ends[__idx], __num_partials);
         if (__first >= __last)
-        {
-            if (__write_empty)
-                std::get<0>(__result[__idx]) = __segmented_reduce_to_acc<_Acc>(__init);
-        }
+            std::get<0>(__result[__idx]) = __segmented_reduce_to_acc<_Acc>(__init);
         else
-        {
             std::get<0>(__result[__idx]) = oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
                 __partials, __first + 1, __last, _Acc(__partials[__first]), __binary_op);
-        }
     }
 };
 
@@ -862,23 +800,11 @@ struct __parallel_reduce_by_segment_offsets
             }
         }
 
-        const _Size __threshold = _ChunkTuning::__short_segment_max(__is_gpu);
-        if (__n <= 0 || __n / __m > __threshold)
-        {
-            // Long average segment, or an empty input: all in chunks, chunk length from the longest on GPUs; chunkless
-            // segments, every one if the input or all the segments are empty, get the init
-            const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
-            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
-                               __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
-            return;
-        }
-
-        const _Size __max_length = __reduce_short_segments(_BackendTag{}, __exec, __input, __offsets, __result, __n,
-                                                           __m, __threshold, __init, __binary_op);
-        // At most __n / __threshold segments are longer than __threshold
-        if (__max_length > 0)
-            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
-                               __binary_op, __threshold, /*__write_empty=*/false, __max_length, __n / __threshold);
+        // Every segment in chunks, the chunk length from the longest on GPUs; an empty segment, every one if the
+        // input is empty, gets the init
+        const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
+        __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
+                           __binary_op, __max_length);
     }
 
   private:
@@ -937,39 +863,13 @@ struct __parallel_reduce_by_segment_offsets
         return __n;
     }
 
-    // Short segments, a work-item each; returns the longest long-segment length (0 if none) via a buffer, cheaper on
-    // GPUs than a copy from device USM
-    template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
-              typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
-    static _Size
-    __reduce_short_segments(_BackendTag, _ExecutionPolicy& __exec, _InRange& __input, _OffsetRange& __offsets,
-                            _OutRange& __result, const _Size __n, const _Size __m, const _Size __threshold,
-                            const _InitType& __init, const _BinaryOperation& __binary_op)
-    {
-        auto __report_buf = __buffer<std::uint32_t>(1).get_buffer();
-        // No host data: the atomic maximum starts from this zero
-        __report_buf.get_host_access(sycl::write_only)[0] = 0;
-        __parallel_for(_BackendTag{}, __exec,
-                       __segmented_reduce_variable_brick<_Acc, _Size, _InitType, _BinaryOperation>{
-                           __n, __threshold, __init, __binary_op},
-                       // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
-                       // with __iters_per_item == 1, one segment per item
-                       __m, __offsets, oneapi::dpl::__ranges::make_zip_view(__result), __input,
-                       oneapi::dpl::__ranges::views::all(__report_buf))
-            .event()
-            .wait_and_throw();
-
-        return __report_buf.get_host_access(sycl::read_only)[0];
-    }
-
-    // Reduces segments longer than __min_length in chunks; __max_segments bounds their number
+    // Reduces every segment in chunks
     template <typename _BackendTag, typename _ExecutionPolicy, typename _InRange, typename _OffsetRange,
               typename _OutRange, typename _Size, typename _InitType, typename _BinaryOperation>
     static void
     __reduce_in_chunks(_BackendTag, _ExecutionPolicy& __exec, const bool __is_gpu, _InRange& __input,
                        _OffsetRange& __offsets, _OutRange& __result, const _Size __n, const _Size __m,
-                       const _InitType& __init, const _BinaryOperation& __binary_op, const _Size __min_length,
-                       const bool __write_empty, const _Size __max_length, const _Size __max_segments)
+                       const _InitType& __init, const _BinaryOperation& __binary_op, const _Size __max_length)
     {
         const _Size __chunk_size = _ChunkTuning::__chunk_size(__is_gpu, __max_length);
 
@@ -983,11 +883,11 @@ struct __parallel_reduce_by_segment_offsets
             oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::take_view_simple(__offsets, __m),
                                                  oneapi::dpl::__ranges::drop_view_simple(__offsets, _Size{1})),
             __chunk_ends.__all_view(), __m,
-            __segmented_reduce_chunk_count<_Size>{__n, __chunk_size, __min_length},
+            __segmented_reduce_chunk_count<_Size>{__n, __chunk_size},
             unseq_backend::__no_init_value<_Size>{}, std::plus<_Size>{}, /*_Inclusive=*/std::true_type{});
 
         // At most n / __chunk_size + 1 chunks per segment, unless the offsets are not ordered
-        const _Size __num_partials = __n / __chunk_size + __max_segments + 1;
+        const _Size __num_partials = __n / __chunk_size + __m + 1;
         __block_storage<_Acc, 0> __partials{__q, std::size_t(__num_partials)};
 
         auto __chunks = __parallel_for(
@@ -1002,7 +902,7 @@ struct __parallel_reduce_by_segment_offsets
         __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_combine_wrapper>(__exec),
                        __chunks.event(),
                        __segmented_reduce_combine_brick<_Acc, _Size, _InitType, _BinaryOperation>{
-                           __num_partials, __write_empty, __init, __binary_op},
+                           __num_partials, __init, __binary_op},
                        __m, __chunk_ends.__all_view(), __partials.__all_view(),
                        // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
                        // with __iters_per_item == 1, one segment per item

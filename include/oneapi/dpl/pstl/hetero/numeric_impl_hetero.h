@@ -292,7 +292,7 @@ __pattern_reduce_by_segment_offsets(__hetero_tag<_BackendTag>, _ExecutionPolicy&
     // the size of the input
     using _Size = std::make_signed_t<std::common_type_t<decltype(+_Diff{}), decltype(+__num_segments)>>;
 
-    // Not no_init: the short and the long segments are written by different kernels
+    // Not no_init: on GPUs, the whole segments and the pieces' tails are written by different kernels
     auto __keep_result = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::write>();
     auto __result_buf = __keep_result(__result, __result + __num_segments);
 
