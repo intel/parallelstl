@@ -16,7 +16,8 @@
 #ifndef _ONEDPL_INTERNAL_OMP_PARALLEL_FOR_H
 #define _ONEDPL_INTERNAL_OMP_PARALLEL_FOR_H
 
-#include <cstddef>
+#include <algorithm> // std::max
+#include <cstddef>   // std::size_t
 
 #include "util.h"
 
@@ -84,15 +85,22 @@ __parallel_for(oneapi::dpl::__internal::__omp_backend_tag, _ExecutionPolicy&&, _
         const auto __policy =
             oneapi::dpl::__omp_backend::__chunk_partitioner(__first, __last, __num_threads, __grainsize);
 
+        // Coarsen the dispatches by grouping several chunks once the chunks stop growing.
+        // It reduces the scheduling overhead as if the chunks continued growing,
+        // while the capped chunk size keeps early exits fine-grained.
+        // TODO: move it to __chunk_partitioner if it is beneficial in other patterns.
+        const std::size_t __chunks_per_dispatch = std::max<std::size_t>(
+            1, __policy.__n_chunks / (__num_threads * oneapi::dpl::__omp_backend::__nominal_chunks_per_thread));
+
         // In libiomp, monotonic scheduling empirically shows better results
         // even on CPUs with hybrid cores with uneven workload.
         // In libgomp, there is no observable difference between monotonic and nonmonotonic modifiers.
         // Generally, nonmonotonic (default dynamic) scheduling should be more performant,
         // thus enabling it by default with other implementations.
 #if __INTEL_LLVM_COMPILER
-        _ONEDPL_PRAGMA(omp parallel for schedule(monotonic : dynamic))
+        _ONEDPL_PRAGMA(omp parallel for schedule(monotonic : dynamic, __chunks_per_dispatch))
 #else
-        _ONEDPL_PRAGMA(omp parallel for schedule(dynamic))
+        _ONEDPL_PRAGMA(omp parallel for schedule(dynamic, __chunks_per_dispatch))
 #endif
         for (std::size_t __chunk = 0; __chunk < __policy.__n_chunks; ++__chunk)
         {
