@@ -835,14 +835,7 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
             const std::uint32_t __hi = std::uint32_t(__me - __piece_begin);
             _Acc __acc = __segmented_reduce_to_acc<_Acc>(
                 std::invoke(__binary_op, __init, __element(__input, __piece_begin, __lo)));
-            std::uint32_t __i = __lo + 1;
-            for (; __i + 3 < __hi; __i += 4)
-                __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(
-                    __binary_op, __acc,
-                    __reduce_four(__element(__input, __piece_begin, __i), __element(__input, __piece_begin, __i + 1),
-                                  __element(__input, __piece_begin, __i + 2),
-                                  __element(__input, __piece_begin, __i + 3))));
-            for (; __i < __hi; ++__i)
+            for (std::uint32_t __i = __lo + 1; __i < __hi; ++__i)
                 __acc = __segmented_reduce_to_acc<_Acc>(
                     std::invoke(__binary_op, __acc, __element(__input, __piece_begin, __i)));
             __result[__mine] = __acc;
