@@ -296,6 +296,15 @@ __pattern_reduce_by_segment_offsets(__hetero_tag<_BackendTag>, _ExecutionPolicy&
     auto __keep_result = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::write>();
     auto __result_buf = __keep_result(__result, __result + __num_segments);
 
+    // An empty input, which has no SYCL range: every segment gets the init
+    if (__first == __last)
+    {
+        __par_backend_hetero::__parallel_reduce_by_segment_offsets_fill<_Acc>(
+            _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __result_buf.all_view(), _Size(__num_segments),
+            __init);
+        return __result + __num_segments;
+    }
+
     auto __keep_input = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read>();
     auto __input_buf = __keep_input(__first, __last);
     auto __keep_offsets = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read>();
