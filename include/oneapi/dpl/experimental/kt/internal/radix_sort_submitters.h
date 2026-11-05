@@ -110,7 +110,8 @@ struct __radix_sort_histogram_submitter<__is_ascending, __radix_bits, __hist_wor
         const std::uint32_t __actual_group_count =
             oneapi::dpl::__internal::__dpl_ceiling_div(__chunk_count, __chunks_per_group);
 
-        sycl::nd_range<1> __nd_range(std::size_t(__actual_group_count) * __hist_work_group_size, __hist_work_group_size);
+        sycl::nd_range<1> __nd_range(std::size_t(__actual_group_count) * __hist_work_group_size,
+                                     __hist_work_group_size);
         return __q.submit([&](sycl::handler& __cgh) {
             sycl::local_accessor<std::uint32_t, 1> __slm_accessor(_GlobalHistKernelT::__slm_size, __cgh);
             oneapi::dpl::__ranges::__require_access(__cgh, __keys_rng);

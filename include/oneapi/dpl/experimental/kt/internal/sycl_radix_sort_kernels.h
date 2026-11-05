@@ -68,11 +68,12 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
     std::uint32_t __chunks_per_group;
 
     __global_histogram(const _KeysRng& __keys_rng, sycl::local_accessor<std::uint32_t, 1> __slm_acc,
-                       std::uint32_t* __p_global_offset, __onesweep_segments __segments, std::uint32_t __chunks_per_segment,
-                       std::uint32_t __chunk_count, std::uint32_t __chunks_per_group)
-        : __keys_rng(__keys_rng), __slm_acc(__slm_acc), __p_global_offset(__p_global_offset),
-          __segments(__segments), __chunks_per_segment(__chunks_per_segment),
-          __chunk_count(__chunk_count), __chunks_per_group(__chunks_per_group)
+                       std::uint32_t* __p_global_offset, __onesweep_segments __segments,
+                       std::uint32_t __chunks_per_segment, std::uint32_t __chunk_count,
+                       std::uint32_t __chunks_per_group)
+        : __keys_rng(__keys_rng), __slm_acc(__slm_acc), __p_global_offset(__p_global_offset), __segments(__segments),
+          __chunks_per_segment(__chunks_per_segment), __chunk_count(__chunk_count),
+          __chunks_per_group(__chunks_per_group)
     {
     }
 
@@ -227,7 +228,6 @@ struct __global_histogram<__sycl_tag, __is_ascending, __radix_bits, __hist_work_
         __flush_segment</*__reset=*/false>(__slm, __local_id, __segment);
     }
 };
-
 
 template <bool __is_ascending, std::uint8_t __radix_bits, std::uint16_t __data_per_work_item,
           std::uint16_t __work_group_size, typename _InRngPack, typename _OutRngPack>
