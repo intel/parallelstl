@@ -204,11 +204,10 @@ struct __segmented_reduce_combine_brick
         // No chunks: an empty segment gets the init. Unordered offsets may exceed the computed chunks: results
         // unspecified
         const _Size __last = std::min<_Size>(__chunk_ends[__idx], __num_partials);
-        if (__first >= __last)
-            std::get<0>(__result[__idx]) = __segmented_reduce_to_acc<_Acc>(__init);
-        else
-            std::get<0>(__result[__idx]) = oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
-                __partials, __first + 1, __last, _Acc(__partials[__first]), __binary_op);
+        std::get<0>(__result[__idx]) =
+            __first < __last ? oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
+                                   __partials, __first + 1, __last, _Acc(__partials[__first]), __binary_op)
+                             : __segmented_reduce_to_acc<_Acc>(__init);
     }
 };
 
