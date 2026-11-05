@@ -89,22 +89,6 @@ struct __segmented_reduce_variable_brick
     }
 };
 
-// Writes the init of an empty segment to its result, which may be a proxy (e.g. of a zip iterator)
-template <typename _Acc>
-struct __segmented_reduce_assign_init
-{
-    _Acc __init_acc;
-
-    template <typename _Result>
-    void
-    operator()(_Result&& __result) const
-    {
-        __result = __init_acc;
-    }
-};
-
-template <typename _Name>
-class __segmented_reduce_fill_wrapper;
 template <typename _Name>
 class __segmented_reduce_flat_tail_wrapper;
 
@@ -836,30 +820,11 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
 template <typename _Name>
 class __segmented_reduce_length_wrapper;
 template <typename _Name>
-class __segmented_reduce_all_empty_wrapper;
-template <typename _Name>
 class __segmented_reduce_scan_wrapper;
 template <typename _Name>
 class __segmented_reduce_chunk_wrapper;
 template <typename _Name>
 class __segmented_reduce_combine_wrapper;
-
-// Writes the init into every result, as the input is empty
-template <typename _Acc, typename _BackendTag, typename _ExecutionPolicy, typename _Range, typename _Size,
-          typename _InitType>
-void
-__parallel_reduce_by_segment_offsets_fill(_BackendTag, _ExecutionPolicy&& __exec, _Range&& __result, _Size __m,
-                                          const _InitType& __init)
-{
-    // Separate kernel name, as the same call also instantiates the reduction kernel
-    __parallel_for(_BackendTag{},
-                   make_wrapped_policy<__segmented_reduce_fill_wrapper>(std::forward<_ExecutionPolicy>(__exec)),
-                   unseq_backend::walk_n_vectors_or_scalars<__segmented_reduce_assign_init<_Acc>>{
-                       __segmented_reduce_assign_init<_Acc>{__segmented_reduce_to_acc<_Acc>(__init)}, std::size_t(__m)},
-                   __m, std::forward<_Range>(__result))
-        .event()
-        .wait_and_throw();
-}
 
 // Reduces the segments of [0, __n) given by __m + 1 offsets into __m results
 template <typename _Acc, typename _ChunkTuning = __segmented_reduce_chunk_tuning,
@@ -876,17 +841,9 @@ struct __parallel_reduce_by_segment_offsets
         // Segment lengths and index steps may go negative before they are clamped
         static_assert(std::is_signed_v<_Size>, "The size type must be signed");
 
-        // No segments: nothing to write; an empty input: every segment gets the init.
-        // The caller, __pattern_reduce_by_segment_offsets, handles both already;
-        // the guard keeps the divisions below defined
-        if (__m <= 0 || __n <= 0)
-        {
-            if (__m > 0)
-                __parallel_reduce_by_segment_offsets_fill<_Acc>(
-                    _BackendTag{}, make_wrapped_policy<__segmented_reduce_all_empty_wrapper>(__exec), __result, __m,
-                    __init);
+        // No segments: nothing to write
+        if (__m <= 0)
             return;
-        }
 
         sycl::queue __q = __exec.queue();
         const bool __is_gpu = __q.get_device().is_gpu();
@@ -894,7 +851,8 @@ struct __parallel_reduce_by_segment_offsets
         if constexpr (std::is_arithmetic_v<_Acc> &&
                       std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
         {
-            if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__sub_group_size))
+            if (__n > 0 && __is_gpu &&
+                oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__sub_group_size))
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
 
@@ -905,24 +863,13 @@ struct __parallel_reduce_by_segment_offsets
         }
 
         const _Size __threshold = _ChunkTuning::__short_segment_max(__is_gpu);
-        if (__n / __m > __threshold)
+        if (__n <= 0 || __n / __m > __threshold)
         {
-            // Long average segment: all in chunks, chunk length from the longest on GPUs; chunkless segments get init
+            // Long average segment, or an empty input: all in chunks, chunk length from the longest on GPUs; chunkless
+            // segments, every one if the input or all the segments are empty, get the init
             const _Size __max_length = __max_segment_length(_BackendTag{}, __exec, __is_gpu, __offsets, __n, __m);
-            if (__max_length > 0)
-            {
-                __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
-                                   __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
-            }
-            else
-            {
-                // Every segment empty: only the init to write
-                // Own kernel name: the empty-input fill has the default one with other template arguments
-                __parallel_reduce_by_segment_offsets_fill<_Acc>(
-                    _BackendTag{}, make_wrapped_policy<__segmented_reduce_all_empty_wrapper>(__exec), __result, __m,
-                    __init);
-            }
-
+            __reduce_in_chunks(_BackendTag{}, __exec, __is_gpu, __input, __offsets, __result, __n, __m, __init,
+                               __binary_op, _Size{0}, /*__write_empty=*/true, __max_length, __m);
             return;
         }
 
