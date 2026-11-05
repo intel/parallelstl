@@ -286,7 +286,7 @@ struct __segmented_reduce_is_buffer<sycl::buffer<_T, __dim, _AllocT>> : std::tru
 };
 
 // A work-item per piece of the flat path: the tail of the piece with the heads of the following pieces its segment
-// covers, in piece order. Heads, then tails, in __partials
+// covers, in piece order. Heads, then tails, in __partials; both arrays in device USM written by the kernel
 template <typename _Acc, typename _Size, typename _BinaryOperation>
 struct __segmented_reduce_flat_tail_brick
 {
@@ -297,12 +297,12 @@ struct __segmented_reduce_flat_tail_brick
     std::uint32_t __num_pieces = {};
     std::uint32_t __piece_size = {};
     mutable _BinaryOperation __binary_op;
+    const _Size* __tail_segments = nullptr;
+    const _Acc* __partials = nullptr;
 
-    template <typename _IsFull, typename _Params, typename _TailSegments, typename _Partials, typename _Offsets,
-              typename _Result>
+    template <typename _IsFull, typename _Params, typename _Offsets, typename _Result>
     void
-    operator()(_IsFull, const std::size_t __idx, _Params, _TailSegments __tail_segments, _Partials __partials,
-               _Offsets __offsets, _Result __result) const
+    operator()(_IsFull, const std::size_t __idx, _Params, _Offsets __offsets, _Result __result) const
     {
         static_assert(_Params::__vector_size == 1,
                       "The brick operates with tuples which must be excluded from vectorizable types");
@@ -341,8 +341,8 @@ struct __segmented_reduce_flat_geometry
 
 // GPU, arithmetic types: each sub-group takes a piece of consecutive elements, finds its first segment by search and
 // reduces the segments with coalesced loads, writing whole ones. The partial head/tail segments are combined by a
-// brick, a work-item per piece. Tuned on GPUs. The search needs sorted offsets: with unsorted ones (results unspecified) a segment
-// may be met by no piece and left unwritten.
+// brick, a work-item per piece. Tuned on GPUs. The search needs sorted offsets: with unsorted ones (results
+// unspecified) a segment may be met by no piece and left unwritten.
 struct __segmented_reduce_flat_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
@@ -514,14 +514,13 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
         return __geometry.__inputs_per_item * _Tuning::__sub_group_size;
     }
 
-    // The kernel: a sub-group per piece. The pieces' tail segments and head/tail partials (heads first) go to SYCL
-    // buffers, whose accessors order __combine_tails after it
-    template <typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size, typename _TailSegments,
-              typename _Partials>
+    // The kernel: a sub-group per piece. The pieces' tail segments and head/tail partials (heads first) go to device
+    // USM for __combine_tails, which depends on the returned event
+    template <typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     sycl::event
     operator()(sycl::queue& __q, const __segmented_reduce_flat_geometry& __geometry, _InRange&& __input,
                _OffsetRange&& __offsets, _OutRange&& __result, const _Size __n, const _Size __m,
-               _TailSegments& __tail_segments, _Partials& __partials) const
+               _Size* const __tail_segment_ptr, _Acc* const __partials_ptr) const
     {
         // Accumulators in __lazy_ctor_storage are never destroyed: arithmetic types only
         static_assert(std::is_trivially_destructible_v<_Acc>);
@@ -546,14 +545,12 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
         // A sub-group per piece
         return __q.submit([&](sycl::handler& __cgh) {
             oneapi::dpl::__ranges::__require_access(__cgh, __input, __offsets, __result);
-            sycl::accessor __tail_segments_acc(__tail_segments, __cgh, sycl::write_only, __dpl_sycl::__no_init{});
-            sycl::accessor __partials_acc(__partials, __cgh, sycl::write_only, __dpl_sycl::__no_init{});
 
             __cgh.parallel_for<_Name...>(
                 sycl::nd_range<1>(sycl::range<1>(__num_groups * __work_group_size), sycl::range<1>(__work_group_size)),
                 [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
-                    _Size* const __tail_segment_of = __dpl_sycl::__get_accessor_ptr(__tail_segments_acc);
-                    _Acc* const __heads = __dpl_sycl::__get_accessor_ptr(__partials_acc);
+                    _Size* const __tail_segment_of = __tail_segment_ptr;
+                    _Acc* const __heads = __partials_ptr;
                     _Acc* const __tails = __heads + __num_pieces;
 
                     const auto __sg = __item.get_sub_group();
@@ -575,21 +572,21 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
         });
     }
 
-    // After the kernel, with more than one piece: each piece's tail with the following heads its segment covers, by a
-    // brick
+    // After __kernel, with more than one piece: each piece's tail with the following heads its segment covers, by a
+    // brick started on the device when __kernel ends
     template <typename _BackendTag, typename _ExecutionPolicy, typename _OffsetRange, typename _OutRange,
-              typename _Size, typename _TailSegments, typename _Partials>
+              typename _Size>
     sycl::event
-    __combine_tails(_BackendTag, _ExecutionPolicy& __exec, const __segmented_reduce_flat_geometry& __geometry,
-                    _OffsetRange& __offsets, _OutRange& __result, const _Size __n, const _Size __m,
-                    _TailSegments& __tail_segments, _Partials& __partials) const
+    __combine_tails(_BackendTag, _ExecutionPolicy& __exec, const sycl::event& __kernel,
+                    const __segmented_reduce_flat_geometry& __geometry, _OffsetRange& __offsets, _OutRange& __result,
+                    const _Size __n, const _Size __m, const _Size* __tail_segments, const _Acc* __partials) const
     {
         const std::uint32_t __num_pieces = __num_pieces_of(__geometry);
         return __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_flat_tail_wrapper>(__exec),
-                              __segmented_reduce_flat_tail_brick<_Acc, _Size, _BinaryOperation>{
-                                  __n, __m, __num_pieces, __piece_size_of(__geometry), __binary_op},
-                              __num_pieces, oneapi::dpl::__ranges::views::all_read(__tail_segments),
-                              oneapi::dpl::__ranges::views::all_read(__partials), __offsets,
+                              __kernel, __segmented_reduce_flat_tail_brick<_Acc, _Size, _BinaryOperation>{
+                                  __n, __m, __num_pieces, __piece_size_of(__geometry), __binary_op, __tail_segments,
+                                  __partials},
+                              __num_pieces, __offsets,
                               // Zip view: a tuple value type keeps __parallel_for from vectorizing
                               // (__vector_size == 1); with __iters_per_item == 1, one piece per item
                               oneapi::dpl::__ranges::make_zip_view(__result))
@@ -1048,7 +1045,8 @@ struct __parallel_reduce_by_segment_offsets
         if constexpr (std::is_arithmetic_v<_Acc> &&
                       std::is_arithmetic_v<oneapi::dpl::__internal::__value_t<std::decay_t<_InRange>>>)
         {
-            if (__is_gpu && oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__sub_group_size))
+            if (__is_gpu && __q.get_device().has(sycl::aspect::usm_device_allocations) &&
+                oneapi::dpl::__internal::__supports_sub_group_size(__q, _FlatTuning::__sub_group_size))
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
 
@@ -1106,20 +1104,26 @@ struct __parallel_reduce_by_segment_offsets
             _FlatTuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
         const std::uint32_t __num_pieces = _FlatSubmitter::__num_pieces_of(__geometry);
 
-        // Tail segment of every piece; its head and tail partials, heads first
-        auto __tail_segments = __buffer<_Size>(__num_pieces).get_buffer();
-        auto __partials = __buffer<_Acc>(2 * std::size_t(__num_pieces)).get_buffer();
-        // The kernel and the tail brick are ordered only by these SYCL buffers' accessors
-        static_assert(__segmented_reduce_is_buffer<decltype(__tail_segments)>::value &&
-                          __segmented_reduce_is_buffer<decltype(__partials)>::value,
-                      "the tail brick relies on the implicit dependencies of SYCL buffers");
+        // Tail segment of every piece, then its head and tail partials, heads first, in one USM storage typed by the
+        // more aligned type so both arrays start aligned; the tail brick depends on the kernel's event
+        using _Unit = std::conditional_t<(alignof(_Acc) > alignof(_Size)), _Acc, _Size>;
+        const std::size_t __segment_slots =
+            oneapi::dpl::__internal::__dpl_ceiling_div(__num_pieces * sizeof(_Size), sizeof(_Unit));
+        const std::size_t __partial_slots =
+            oneapi::dpl::__internal::__dpl_ceiling_div(2 * std::size_t(__num_pieces) * sizeof(_Acc), sizeof(_Unit));
+        __device_storage<_Unit> __units{__q, __segment_slots + __partial_slots};
+        // The flat path is taken only with device USM, so the storage is not a SYCL buffer
+        _Unit* const __units_ptr = __units.__usm_buf.get();
+        assert(__units_ptr != nullptr);
+        _Size* const __tail_segments = reinterpret_cast<_Size*>(__units_ptr);
+        _Acc* const __partials = reinterpret_cast<_Acc*>(__units_ptr + __segment_slots);
 
         const _FlatSubmitter __submitter{__init, __binary_op};
         sycl::event __event =
             __submitter(__q, __geometry, __input, __offsets, __result, __n, __m, __tail_segments, __partials);
         if (__num_pieces > 1)
-            __event = __submitter.__combine_tails(_BackendTag{}, __exec, __geometry, __offsets, __result, __n, __m,
-                                                  __tail_segments, __partials);
+            __event = __submitter.__combine_tails(_BackendTag{}, __exec, __event, __geometry, __offsets, __result, __n,
+                                                  __m, __tail_segments, __partials);
 
         // Wait: the temporary data is released on return
         __event.wait_and_throw();
