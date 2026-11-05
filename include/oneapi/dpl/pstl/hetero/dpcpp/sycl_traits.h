@@ -516,6 +516,9 @@ struct __segmented_reduce_chunk_brick;
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_combine_brick;
 
+template <typename _Acc, typename _Size, typename _BinaryOperation>
+struct __segmented_reduce_flat_tail_brick;
+
 } // namespace oneapi::dpl::__par_backend_hetero
 
 template <typename _UnaryOp, typename _InitType>
@@ -699,6 +702,13 @@ template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOpe
 struct sycl::is_device_copyable<_ONEDPL_SPECIALIZE_FOR(
     oneapi::dpl::__par_backend_hetero::__segmented_reduce_combine_brick, _Acc, _Size, _InitType, _BinaryOperation)>
     : oneapi::dpl::__internal::__are_all_device_copyable<_Size, _InitType, _BinaryOperation>
+{
+};
+
+template <typename _Acc, typename _Size, typename _BinaryOperation>
+struct sycl::is_device_copyable<_ONEDPL_SPECIALIZE_FOR(
+    oneapi::dpl::__par_backend_hetero::__segmented_reduce_flat_tail_brick, _Acc, _Size, _BinaryOperation)>
+    : oneapi::dpl::__internal::__are_all_device_copyable<_Size, _BinaryOperation>
 {
 };
 
