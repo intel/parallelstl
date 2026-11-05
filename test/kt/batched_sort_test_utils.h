@@ -340,11 +340,23 @@ test_case(sycl::queue q, DataMode mode, std::size_t segment_size, std::size_t se
     std::vector<ValueT> actual_vals, vals_in_after;
     if constexpr (Sorter::uses_temp_storage)
     {
-        // Exactly the reported number of bytes, at an address only aligned to a byte
+        // Exactly the reported number of bytes, at an address only aligned to a byte. The storage is surrounded by
+        // guard bytes holding a sentinel, which must be left untouched by the sort.
         const std::size_t bytes = Sorter::template bytes_req<KernelParam>(segment_size, n);
-        TestUtils::usm_data_transfer<sycl::usm::alloc::device, std::uint8_t> mem(q, bytes + 1);
+        constexpr std::size_t guard_before = 63; // odd offset keeps the storage only byte-aligned
+        constexpr std::size_t guard_after = 64;
+        constexpr std::uint8_t sentinel = 0xA5;
+        std::vector<std::uint8_t> mem_host(guard_before + bytes + guard_after, sentinel);
+        TestUtils::usm_data_transfer<sycl::usm::alloc::device, std::uint8_t> mem(q, mem_host.begin(), mem_host.end());
         device_sort<Sorter, IsAscending, InPlace>(q, mode, keys, vals, actual_keys, actual_vals, keys_in_after,
-                                                  vals_in_after, segment_size, param, mem.get_data() + 1, bytes);
+                                                  vals_in_after, segment_size, param, mem.get_data() + guard_before,
+                                                  bytes);
+        mem.retrieve_data(mem_host.begin());
+        const auto outside_storage = [&](std::size_t i) { return i < guard_before || i >= guard_before + bytes; };
+        std::size_t guard_overwrites = 0;
+        for (std::size_t i = 0; i < mem_host.size(); ++i)
+            guard_overwrites += outside_storage(i) && mem_host[i] != sentinel;
+        EXPECT_EQ(std::size_t{0}, guard_overwrites, "temporary storage written out of bounds");
     }
     else
     {
