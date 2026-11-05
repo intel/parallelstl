@@ -692,8 +692,8 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
     struct __piece_parts
     {
         _Size __tail_segment = {};
-        bool __has_head = false;
-        oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head, __tail;
+        oneapi::dpl::__internal::__opt_lazy_ctor_storage<_Acc> __head;
+        oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __tail;
     };
 
     template <typename _OffsetRange, typename _Size>
@@ -923,7 +923,6 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
             else
             {
                 __parts.__head.__setup(__acc);
-                __parts.__has_head = true;
             }
         }
     }
@@ -979,8 +978,8 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
                         const __piece_parts<_Size>& __parts, _Acc* const __heads, _Acc* const __tails,
                         _Size* const __tail_segment_of)
     {
-        if (__lane == 0 && __parts.__has_head)
-            __heads[__piece] = __parts.__head.__v;
+        if (__lane == 0 && __parts.__head.__has_value())
+            __heads[__piece] = __parts.__head.__get_cref();
         if (__lane == 0 && __parts.__tail_segment < __m)
             __tails[__piece] = __parts.__tail.__v;
         if (__lane == 0)
