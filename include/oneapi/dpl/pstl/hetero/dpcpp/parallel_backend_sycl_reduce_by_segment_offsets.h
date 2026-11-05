@@ -341,8 +341,8 @@ struct __segmented_reduce_flat_geometry
 
 // GPU, arithmetic types: each sub-group takes a piece of consecutive elements, finds its first segment by search and
 // reduces the segments with coalesced loads, writing whole ones. The partial head/tail segments are combined by a
-// brick, a work-item per piece. Tuned on GPUs. The search needs sorted offsets: with unsorted ones (results unspecified) a segment
-// may be met by no piece and left unwritten.
+// brick, a work-item per piece. Tuned on GPUs. The search needs sorted offsets: with unsorted ones (results
+// unspecified) a segment may be met by no piece and left unwritten.
 struct __segmented_reduce_flat_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
@@ -354,82 +354,28 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __max_inputs_per_item = 4 * __min_inputs_per_item;
     static constexpr std::size_t __small_input = std::size_t(1) << 20;
 
-    // Average segment length up to which walking a piece costs more than its loads: size pieces to fill HW threads
-    static constexpr std::size_t __short_average_segment = 2048;
-
     static constexpr std::size_t __work_group_size_limit = 256;
 
-    // Xe core: 8 compute units, 8 hardware threads each, a sub-group per thread
+    // Xe core: 8 compute units
     static constexpr std::size_t __compute_units_per_core = 8;
-    static constexpr std::size_t __threads_per_compute_unit = 8;
 
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
 
-    // Bands by average segment length (__n / __m). Short: a piece per HW thread, fewer elements per work-item for
-    // small inputs so more sub-groups share them
-    struct __short_segments
-    {
-        static constexpr std::size_t __tiny_input = std::size_t(1) << 18;
-        static constexpr std::size_t __tiny_min_inputs_per_item = 4;
-        static constexpr std::size_t __small_min_inputs_per_item = 8;
-
-        static std::size_t
-        __items(const std::size_t __compute_units, const std::size_t /*__min_groups*/,
-                const std::size_t /*__work_group_size*/)
-        {
-            return __threads_per_compute_unit * std::max<std::size_t>(1, __compute_units) * __sub_group_size;
-        }
-
-        static std::size_t
-        __min_inputs(const std::size_t __n)
-        {
-            return __n <= __tiny_input    ? __tiny_min_inputs_per_item
-                   : __n <= __small_input ? __small_min_inputs_per_item
-                                          : __min_inputs_per_item;
-        }
-    };
-
-    // Long: twice as many work-groups as Xe cores, as in reduce-then-scan
-    struct __long_segments
-    {
-        static std::size_t
-        __items(const std::size_t /*__compute_units*/, const std::size_t __min_groups,
-                const std::size_t __work_group_size)
-        {
-            return __min_groups * __work_group_size;
-        }
-
-        static std::size_t
-        __min_inputs(const std::size_t __n)
-        {
-            return __n <= __small_input ? __min_inputs_per_item : __large_min_inputs_per_item;
-        }
-    };
-
-    // Launch for __n elements in __m segments: work-items per band, elements per work-item within band bounds, and
-    // work-groups halved (down to one sub-group) until there are at least two per Xe core
+    // Launch for __n elements: twice as many work-groups as Xe cores, as in reduce-then-scan, elements per work-item
+    // within bounds, and work-groups halved (down to one sub-group) until there are at least two per Xe core
     static __segmented_reduce_flat_geometry
-    __geometry(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
-    {
-        if (__n <= __m * __short_average_segment)
-            return __geometry_of<__short_segments>(__q, __n);
-
-        return __geometry_of<__long_segments>(__q, __n);
-    }
-
-    template <typename _Band>
-    static __segmented_reduce_flat_geometry
-    __geometry_of(const sycl::queue& __q, const std::size_t __n)
+    __geometry(const sycl::queue& __q, const std::size_t __n)
     {
         std::size_t __work_group_size =
             std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
                                            __sub_group_size * __sub_group_size);
         const std::size_t __compute_units = oneapi::dpl::__internal::__max_compute_units(__q);
         const std::size_t __min_groups = 2 * std::max<std::size_t>(1, __compute_units / __compute_units_per_core);
-        const std::size_t __items = _Band::__items(__compute_units, __min_groups, __work_group_size);
+        const std::size_t __min_inputs = __n <= __small_input ? __min_inputs_per_item : __large_min_inputs_per_item;
         const std::size_t __inputs_per_item = std::clamp<std::size_t>(
-            oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items), _Band::__min_inputs(__n), __max_inputs_per_item);
+            oneapi::dpl::__internal::__dpl_ceiling_div(__n, __min_groups * __work_group_size), __min_inputs,
+            __max_inputs_per_item);
 
         auto __groups = [__n, __inputs_per_item](std::size_t __size) {
             return oneapi::dpl::__internal::__dpl_ceiling_div(__n, __inputs_per_item * __size);
@@ -1011,7 +957,7 @@ struct __parallel_reduce_by_segment_offsets
 
         sycl::queue __q = __exec.queue();
         const __segmented_reduce_flat_geometry __geometry =
-            _FlatTuning::__geometry(__q, std::size_t(__n), std::size_t(__m));
+            _FlatTuning::__geometry(__q, std::size_t(__n));
         const std::uint32_t __num_pieces = _FlatSubmitter::__num_pieces_of(__geometry);
 
         // Tail segment of every piece; its head and tail partials, heads first
