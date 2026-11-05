@@ -13,7 +13,7 @@
 #include <algorithm>   // std::min, std::max, std::clamp
 #include <cmath>       // std::sqrt
 #include <cstddef>     // std::size_t
-#include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t, std::uintptr_t
+#include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t
 #include <functional>  // std::invoke, std::plus
 #include <limits>      // std::numeric_limits
 #include <type_traits> // std::integral_constant, std::conditional_t, std::enable_if_t, std::is_*_v, ...
@@ -320,7 +320,7 @@ struct __segmented_reduce_flat_tail_brick
     }
 };
 
-// Whether a range is pointer-based, so consecutive elements can be loaded as one vector
+// Whether a range is pointer-based, so its elements can be read through the pointer
 template <typename _Range, typename = void>
 struct __segmented_reduce_pointer_input : std::false_type
 {
@@ -365,9 +365,6 @@ struct __segmented_reduce_flat_tuning
 
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
-
-    // Min whole vectors for sub-group vector loads; shorter ranges go faster per element (alignment/head/tail cost)
-    static constexpr std::size_t __min_vectors = 8;
 
     // Bands by average segment length (__n / __m). Short: a piece per HW thread, fewer elements per work-item for
     // small inputs so more sub-groups share them
@@ -726,63 +723,7 @@ struct __segmented_reduce_flat_submitter<_Acc, __internal::__optional_kernel_nam
         std::uint32_t __active = std::min<std::uint32_t>(__sub_group_size, (__last - __first) / 2);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
 
-        // With a pointer input, each lane loads aligned vectors of four; the unaligned head and tail go to lane 0.
-        // Pairs within a vector keep the accumulator from a lone element.
-        bool __by_vectors = false;
-        if constexpr (__segmented_reduce_pointer_input<_Input>::value)
-        {
-            using _T = std::remove_cv_t<std::remove_pointer_t<decltype(__input.begin())>>;
-            if constexpr (std::is_arithmetic_v<_T> && !std::is_same_v<_T, bool> &&
-                          (sizeof(_T) == 1 || sizeof(_T) == 2 || sizeof(_T) == 4 || sizeof(_T) == 8))
-            {
-                const _T* const __p = __input.begin() + __base;
-                // Four elements a vector, two for 8-byte types, to stay within 16 bytes and be aligned as often
-                constexpr std::uint32_t __w = sizeof(_T) == 8 ? 2 : 4;
-                using _V = sycl::vec<_T, __w>;
-                constexpr std::uint32_t __vb = sizeof(_V);
-                const std::uint32_t __mis = std::uint32_t(reinterpret_cast<std::uintptr_t>(__p + __first) % __vb);
-                // First vector-aligned index, at most __last
-                const std::uint32_t __a = std::min<std::uint32_t>(__last, __first + (__vb - __mis) % __vb / sizeof(_T));
-                const std::uint32_t __nv = (__last - __a) / __w;
-                if (__nv >= _Tuning::__min_vectors)
-                {
-                    __by_vectors = true;
-                    __active = std::min<std::uint32_t>(__sub_group_size, __nv);
-                    auto __load4 = [&](std::uint32_t __k) -> _Acc {
-                        _V __v;
-                        __v.load(0, sycl::address_space_cast<sycl::access::address_space::generic_space,
-                                                             sycl::access::decorated::no>(__p + __a + __w * __k));
-                        if constexpr (__w == 2)
-                            return __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, _T(__v[0]), _T(__v[1])));
-                        else
-                            return __reduce_four(_T(__v[0]), _T(__v[1]), _T(__v[2]), _T(__v[3]));
-                    };
-                    if (__lane < __active)
-                    {
-                        std::uint32_t __k = __lane;
-                        __acc.__setup(__load4(__k));
-                        for (__k += __active; __k + 3 * __active < __nv; __k += 4 * __active)
-                            __acc.__v =
-                                std::invoke(__binary_op, __acc.__v,
-                                            __reduce_four(__load4(__k), __load4(__k + __active),
-                                                          __load4(__k + 2 * __active), __load4(__k + 3 * __active)));
-                        for (; __k < __nv; __k += __active)
-                            __acc.__v = std::invoke(__binary_op, __acc.__v, __load4(__k));
-                    }
-
-                    // Unaligned head and tail, at most three elements each (one for 8 bytes), to lane 0
-                    if (__lane == 0)
-                    {
-                        for (std::uint32_t __i = __first; __i < __a; ++__i)
-                            __acc.__v = std::invoke(__binary_op, __acc.__v, __p[__i]);
-                        for (std::uint32_t __i = __a + __w * __nv; __i < __last; ++__i)
-                            __acc.__v = std::invoke(__binary_op, __acc.__v, __p[__i]);
-                    }
-                }
-            }
-        }
-
-        if (!__by_vectors && __lane < __active)
+        if (__lane < __active)
         {
             std::uint32_t __i = __first + __lane;
             __acc.__setup(__segmented_reduce_to_acc<_Acc>(
