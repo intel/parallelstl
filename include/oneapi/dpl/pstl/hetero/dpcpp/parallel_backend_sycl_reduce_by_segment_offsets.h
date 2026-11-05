@@ -274,17 +274,6 @@ struct __segmented_reduce_combine_brick
     }
 };
 
-// Whether a temporary storage is a SYCL buffer, whose accessors order the kernels using it
-template <typename _Storage>
-struct __segmented_reduce_is_buffer : std::false_type
-{
-};
-
-template <typename _T, int __dim, typename _AllocT>
-struct __segmented_reduce_is_buffer<sycl::buffer<_T, __dim, _AllocT>> : std::true_type
-{
-};
-
 // A work-item per piece of the flat path: the tail of the piece with the heads of the following pieces its segment
 // covers, in piece order. Heads, then tails, in __partials; both are views of block storages written by the kernel
 template <typename _Acc, typename _Size, typename _BinaryOperation>
@@ -1176,40 +1165,37 @@ struct __parallel_reduce_by_segment_offsets
     {
         const _Size __chunk_size = _ChunkTuning::__chunk_size(__is_gpu, __max_length);
 
-        // Chunk ends per segment: inclusive scan of chunk counts from adjacent offsets. Not waited on (the chunks
-        // depend via __chunk_ends); its future keeps the scan's temporaries alive until combining ends.
-        auto __chunk_ends = __buffer<_Size>(__m).get_buffer();
+        // Chunk ends per segment: inclusive scan of chunk counts from adjacent offsets. Its future keeps the scan's
+        // temporaries alive until combining ends. The temporaries are device USM or, without it, SYCL buffers; each
+        // step also starts on the device after the previous one
+        sycl::queue __q = __exec.queue();
+        __block_storage<_Size, 0> __chunk_ends{__q, std::size_t(__m)};
         auto __scan = __parallel_transform_scan(
             _BackendTag{}, make_wrapped_policy<__segmented_reduce_scan_wrapper>(__exec),
             oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::take_view_simple(__offsets, __m),
                                                  oneapi::dpl::__ranges::drop_view_simple(__offsets, _Size{1})),
-            oneapi::dpl::__ranges::views::all_write(__chunk_ends), __m,
+            __chunk_ends.__all_view(), __m,
             __segmented_reduce_chunk_count<_Size>{__n, __chunk_size, __min_length},
             unseq_backend::__no_init_value<_Size>{}, std::plus<_Size>{}, /*_Inclusive=*/std::true_type{});
 
         // At most n / __chunk_size + 1 chunks per segment, unless the offsets are not ordered
         const _Size __num_partials = __n / __chunk_size + __max_segments + 1;
-        auto __partials = __buffer<_Acc>(__num_partials).get_buffer();
+        __block_storage<_Acc, 0> __partials{__q, std::size_t(__num_partials)};
 
-        // Scan, chunks and combination are ordered only by these SYCL buffers' accessors
-        static_assert(__segmented_reduce_is_buffer<decltype(__chunk_ends)>::value &&
-                          __segmented_reduce_is_buffer<decltype(__partials)>::value,
-                      "the steps of the reduction in chunks rely on the implicit dependencies of SYCL buffers");
-
-        __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_chunk_wrapper>(__exec),
-                       __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size,
-                                                                                                __init, __binary_op},
-                       __num_partials, oneapi::dpl::__ranges::views::all_read(__chunk_ends), __offsets,
-                       // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
-                       // with __iters_per_item == 1, one chunk per item
-                       oneapi::dpl::__ranges::make_zip_view(oneapi::dpl::__ranges::views::all_write(__partials)),
-                       __input);
+        auto __chunks = __parallel_for(
+            _BackendTag{}, make_wrapped_policy<__segmented_reduce_chunk_wrapper>(__exec), __scan.event(),
+            __segmented_reduce_chunk_brick<_Acc, _Size, _InitType, _BinaryOperation>{__n, __m, __chunk_size, __init,
+                                                                                     __binary_op},
+            __num_partials, __chunk_ends.__all_view(), __offsets,
+            // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
+            // with __iters_per_item == 1, one chunk per item
+            oneapi::dpl::__ranges::make_zip_view(__partials.__all_view()), __input);
 
         __parallel_for(_BackendTag{}, make_wrapped_policy<__segmented_reduce_combine_wrapper>(__exec),
+                       __chunks.event(),
                        __segmented_reduce_combine_brick<_Acc, _Size, _InitType, _BinaryOperation>{
                            __num_partials, __write_empty, __init, __binary_op},
-                       __m, oneapi::dpl::__ranges::views::all_read(__chunk_ends),
-                       oneapi::dpl::__ranges::views::all_read(__partials),
+                       __m, __chunk_ends.__all_view(), __partials.__all_view(),
                        // Zip view: a tuple value type keeps __parallel_for from vectorizing (__vector_size == 1);
                        // with __iters_per_item == 1, one segment per item
                        oneapi::dpl::__ranges::make_zip_view(__result))
