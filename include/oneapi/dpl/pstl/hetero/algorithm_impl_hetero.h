@@ -29,6 +29,7 @@
 #    include "dpcpp/unseq_backend_sycl.h"
 #endif
 
+#include <cassert> // assert
 #include <cstddef> // std::nullptr_t
 #include <utility> // std::forward
 
@@ -445,14 +446,14 @@ __pattern_min_element(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Ite
     if (__first == __last)
         return __last;
 
-    using _IteratorValueType = typename ::std::iterator_traits<_Iterator>::value_type;
-    using _IndexValueType = ::std::make_unsigned_t<typename ::std::iterator_traits<_Iterator>::difference_type>;
-    using _ReduceValueType = tuple<_IndexValueType, _IteratorValueType>;
+    using _IteratorValueType = typename std::iterator_traits<_Iterator>::value_type;
+    using _IndexValueType = std::make_unsigned_t<typename std::iterator_traits<_Iterator>::difference_type>;
+    using _ReduceValueType = std::tuple<_IndexValueType, _IteratorValueType>;
     // Commutativity of the reduction operator depends on the compilation target (see __reduce_fn below);
     // __spirv_target_conditional postpones deciding on commutativity to the device code where the
     // target can be correctly tested.
-    using _Commutative = oneapi::dpl::__internal::__spirv_target_conditional</*_SpirvT*/ ::std::false_type,
-                                                                             /*_NonSpirvT*/ ::std::true_type>;
+    using _Commutative = oneapi::dpl::__internal::__spirv_target_conditional</*_SpirvT*/ std::false_type,
+                                                                             /*_NonSpirvT*/ std::true_type>;
     __pattern_min_element_reduce_fn<_ReduceValueType, _Compare> __reduce_fn{__comp};
     oneapi::dpl::__internal::__pattern_min_element_transform_fn<_ReduceValueType> __transform_fn;
 
@@ -460,12 +461,10 @@ __pattern_min_element(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Ite
     auto __buf = __keep(__first, __last);
 
     auto __ret_idx = oneapi::dpl::__par_backend_hetero::__parallel_transform_reduce<_ReduceValueType, _Commutative>(
-                         _BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
-                         unseq_backend::__no_init_value{}, // no initial value
-                         __buf.all_view())
-                         .get();
+                         _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
+                         unseq_backend::__no_init_value{}, __buf.all_view());
 
-    return __first + ::std::get<0>(__ret_idx);
+    return __first + std::get<0>(__ret_idx);
 }
 
 // TODO:
@@ -487,16 +486,16 @@ __pattern_min_element(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Ite
 //
 
 template <typename _BackendTag, typename _ExecutionPolicy, typename _Iterator, typename _Compare>
-::std::pair<_Iterator, _Iterator>
+std::pair<_Iterator, _Iterator>
 __pattern_minmax_element(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last,
                          _Compare __comp)
 {
     if (__first == __last)
-        return ::std::make_pair(__first, __first);
+        return std::make_pair(__first, __first);
 
-    using _IteratorValueType = typename ::std::iterator_traits<_Iterator>::value_type;
-    using _IndexValueType = ::std::make_unsigned_t<typename ::std::iterator_traits<_Iterator>::difference_type>;
-    using _ReduceValueType = ::std::tuple<_IndexValueType, _IndexValueType, _IteratorValueType, _IteratorValueType>;
+    using _IteratorValueType = typename std::iterator_traits<_Iterator>::value_type;
+    using _IndexValueType = std::make_unsigned_t<typename std::iterator_traits<_Iterator>::difference_type>;
+    using _ReduceValueType = std::tuple<_IndexValueType, _IndexValueType, _IteratorValueType, _IteratorValueType>;
 
     // This operator doesn't track the lowest found index in case of equal min. values and the highest found index in
     // case of equal max. values. Thus, this operator is not commutative.
@@ -511,13 +510,11 @@ __pattern_minmax_element(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _
     auto __buf = __keep(__first, __last);
 
     auto __ret = oneapi::dpl::__par_backend_hetero::__parallel_transform_reduce<_ReduceValueType,
-                                                                                ::std::false_type /*is_commutative*/>(
-                     _BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
-                     unseq_backend::__no_init_value{}, // no initial value
-                     __buf.all_view())
-                     .get();
+                                                                                std::false_type /*is_commutative*/>(
+                     _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
+                     unseq_backend::__no_init_value{}, __buf.all_view());
 
-    return ::std::make_pair<_Iterator, _Iterator>(__first + ::std::get<0>(__ret), __first + ::std::get<1>(__ret));
+    return std::make_pair<_Iterator, _Iterator>(__first + std::get<0>(__ret), __first + std::get<1>(__ret));
 }
 
 //------------------------------------------------------------------------
@@ -564,16 +561,16 @@ __pattern_adjacent_find(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _I
 //------------------------------------------------------------------------
 
 template <typename _BackendTag, typename _ExecutionPolicy, typename _Iterator, typename _Predicate>
-typename ::std::iterator_traits<_Iterator>::difference_type
+typename std::iterator_traits<_Iterator>::difference_type
 __pattern_count(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Iterator __first, _Iterator __last,
                 _Predicate __predicate)
 {
     if (__first == __last)
         return 0;
 
-    using _ReduceValueType = typename ::std::iterator_traits<_Iterator>::difference_type;
+    using _ReduceValueType = typename std::iterator_traits<_Iterator>::difference_type;
 
-    auto __reduce_fn = ::std::plus<_ReduceValueType>{};
+    auto __reduce_fn = std::plus<_ReduceValueType>{};
     // int is being implicitly casted to difference_type
     // otherwise we can only pass the difference_type as a functor template parameter
     oneapi::dpl::__internal::__pattern_count_transform_fn<_Predicate> __transform_fn{__predicate};
@@ -582,11 +579,9 @@ __pattern_count(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Iterator 
     auto __buf = __keep(__first, __last);
 
     return oneapi::dpl::__par_backend_hetero::__parallel_transform_reduce<_ReduceValueType,
-                                                                          ::std::true_type /*is_commutative*/>(
-               _BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
-               unseq_backend::__no_init_value{}, // no initial value
-               __buf.all_view())
-        .get();
+                                                                          std::true_type /*is_commutative*/>(
+               _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
+               unseq_backend::__no_init_value{}, __buf.all_view());
 }
 
 //------------------------------------------------------------------------
@@ -998,22 +993,13 @@ __pattern_remove_if(__hetero_tag<_BackendTag> __tag, _ExecutionPolicy&& __exec, 
     if (__last == __first)
         return __last;
 
-    using _ValueType = typename ::std::iterator_traits<_Iterator>::value_type;
+    auto __keep = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read_write>();
+    auto __buf = __keep(__first, __last);
 
-    oneapi::dpl::__par_backend_hetero::__buffer<_ValueType> __buf(__last - __first);
-    auto __copy_first = __buf.get();
+    auto __idx_new_last = oneapi::dpl::__par_backend_hetero::__parallel_remove_if(
+        _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __buf.all_view(), __last - __first, __pred);
 
-    auto __copy_last = __pattern_copy_if(__tag, __exec, __first, __last, __copy_first, __not_pred<_Predicate>{__pred});
-
-    //TODO: To optimize copy back depending on Iterator, i.e. set_final_data for host iterator/pointer
-    // __pattern_copy_if above may be async due to there is implicit synchronization on sycl::buffer and the accessors
-
-    // The temporary buffer is constructed from a range, therefore it's destructor will not block, therefore
-    // we must call __pattern_hetero_walk2 in a way which provides blocking synchronization for this pattern.
-    return __pattern_hetero_walk2<__par_backend_hetero::__deferrable_mode, __par_backend_hetero::access_mode::write,
-                                  /*_IsOutNoInitRequested=*/true>(
-        __tag, __par_backend_hetero::make_wrapped_policy<copy_back_wrapper>(::std::forward<_ExecutionPolicy>(__exec)),
-        __copy_first, __copy_last, __first, __brick_copy<__hetero_tag<_BackendTag>>{});
+    return __first + __idx_new_last;
 }
 
 template <typename _BackendTag, typename _ExecutionPolicy, typename _Iterator, typename _BinaryPredicate>
@@ -1024,20 +1010,13 @@ __pattern_unique(__hetero_tag<_BackendTag> __tag, _ExecutionPolicy&& __exec, _It
     if (__last - __first < 2)
         return __last;
 
-    using _ValueType = typename ::std::iterator_traits<_Iterator>::value_type;
+    auto __keep = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read_write>();
+    auto __buf = __keep(__first, __last);
 
-    oneapi::dpl::__par_backend_hetero::__buffer<_ValueType> __buf(__last - __first);
-    auto __copy_first = __buf.get();
-    auto __copy_last = __pattern_unique_copy(__tag, __exec, __first, __last, __copy_first, __pred);
+    auto __idx_new_last = oneapi::dpl::__par_backend_hetero::__parallel_unique(
+        _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __buf.all_view(), __last - __first, __pred);
 
-    //TODO: optimize copy back depending on Iterator, i.e. set_final_data for host iterator/pointer
-
-    // The temporary buffer is constructed from a range, therefore it's destructor will not block, therefore
-    // we must call __pattern_hetero_walk2 in a way which provides blocking synchronization for this pattern.
-    return __pattern_hetero_walk2<__par_backend_hetero::__deferrable_mode, __par_backend_hetero::access_mode::write,
-                                  /*_IsOutNoInitRequested=*/true>(
-        __tag, __par_backend_hetero::make_wrapped_policy<copy_back_wrapper>(::std::forward<_ExecutionPolicy>(__exec)),
-        __copy_first, __copy_last, __first, __brick_copy<__hetero_tag<_BackendTag>>{});
+    return __first + __idx_new_last;
 }
 
 //------------------------------------------------------------------------
@@ -1094,11 +1073,9 @@ __pattern_is_partitioned(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _
     auto __buf = __keep(__first, __last);
 
     auto __res = oneapi::dpl::__par_backend_hetero::__parallel_transform_reduce<_ReduceValueType,
-                                                                                ::std::false_type /*is_commutative*/>(
-                     _BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
-                     unseq_backend::__no_init_value{}, // no initial value
-                     __buf.all_view())
-                     .get();
+                                                                                std::false_type /*is_commutative*/>(
+                     _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
+                     unseq_backend::__no_init_value{}, __buf.all_view());
 
     return __broken != __reduce_fn(_ReduceValueType{__all_true}, __res);
 }
@@ -1374,13 +1351,13 @@ __pattern_lexicographical_compare(__hetero_tag<_BackendTag>, _ExecutionPolicy&& 
     if (__first1 == __last1)
         return true;
 
-    using _Iterator1DifferenceType = typename ::std::iterator_traits<_Iterator1>::difference_type;
+    using _Iterator1DifferenceType = typename std::iterator_traits<_Iterator1>::difference_type;
     using _ReduceValueType = int32_t;
 
     __pattern_lexicographical_compare_reduce_fn<_ReduceValueType> __reduce_fn;
     __pattern_lexicographical_compare_transform_fn<_Compare, _ReduceValueType> __transform_fn{__comp};
 
-    auto __shared_size = ::std::min(__last1 - __first1, (_Iterator1DifferenceType)(__last2 - __first2));
+    auto __shared_size = std::min(__last1 - __first1, (_Iterator1DifferenceType)(__last2 - __first2));
 
     auto __keep1 = oneapi::dpl::__ranges::__get_sycl_range<__par_backend_hetero::access_mode::read>();
     auto __buf1 = __keep1(__first1, __first1 + __shared_size);
@@ -1390,11 +1367,9 @@ __pattern_lexicographical_compare(__hetero_tag<_BackendTag>, _ExecutionPolicy&& 
 
     auto __ret_idx =
         oneapi::dpl::__par_backend_hetero::__parallel_transform_reduce<_ReduceValueType,
-                                                                       ::std::false_type /*is_commutative*/>(
-            _BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
-            unseq_backend::__no_init_value{}, // no initial value
-            __buf1.all_view(), __buf2.all_view())
-            .get();
+                                                                       std::false_type /*is_commutative*/>(
+            _BackendTag{}, std::forward<_ExecutionPolicy>(__exec), __reduce_fn, __transform_fn,
+            unseq_backend::__no_init_value{}, __buf1.all_view(), __buf2.all_view());
 
     return __ret_idx ? __ret_idx == 1 : (__last1 - __first1) < (__last2 - __first2);
 }
@@ -1899,9 +1874,52 @@ __pattern_set_symmetric_difference(__hetero_tag<_BackendTag> __tag, _ExecutionPo
 template <typename _Name>
 struct __shift_left_right;
 
+template <typename _Name>
+struct __shift_via_rotate;
+
+// Estimate when the rotate pattern is faster than shift.
+// Shift does a number of iterations per work-item (referred as walk distance) depending on the shift and size, but has
+// one kernel. Rotate has a constant load per work-item, but has 2 kernels.
+template <typename _Tp, typename _ExecutionPolicy, typename _DiffType>
+bool
+__should_shift_via_rotate(oneapi::dpl::__internal::__device_backend_tag, _ExecutionPolicy&& __exec, _DiffType __n,
+                          _DiffType __size_res)
+{
+    sycl::queue __q_local = __exec.queue();
+    if (!__q_local.get_device().is_gpu())
+        return false;
+
+    if (__n <= 0 || __size_res <= 0)
+        return false;
+
+    const std::size_t __n_u = static_cast<std::size_t>(__n);
+
+    // Empirical value, size where walk is small enough that the extra kernel launch of rotate is too costly to overcome
+    constexpr std::size_t __small_walk_threshold = 64;
+
+    // Empirical value, bytes of read the parallel walk must keep "in flight" to be better than rotate on a per EU basis
+    constexpr std::size_t __bytes_in_flight_per_compute_unit = 128;
+
+    const std::size_t __walk_distance = static_cast<std::size_t>(__size_res) / __n_u;
+
+    // If the in-place work-item walk is short enough, in-place will be faster than rotate because of the extra
+    // kernel launch and pass of the data required for rotate.
+    if (__walk_distance < __small_walk_threshold)
+        return false;
+
+    // The walk's steps are ordered and can't continue until the previous step is finished, so each of its '__n' work
+    // items holds a single load in flight and the walk has '__n * sizeof(_Tp)' bytes to read per step.
+    const std::size_t __bytes_in_flight = __n_u * sizeof(_Tp);
+
+    // If the bytes in flight per step are less than what each compute unit can handle efficiently, prefer rotate
+    // for better utilization of the hardware.
+    return __bytes_in_flight <=
+           __bytes_in_flight_per_compute_unit * oneapi::dpl::__internal::__max_compute_units(__q_local);
+}
+
 template <typename _BackendTag, typename _ExecutionPolicy, typename _Range>
 oneapi::dpl::__internal::__difference_t<_Range>
-__pattern_shift_left(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Range __rng,
+__pattern_shift_left(__hetero_tag<_BackendTag> __tag, _ExecutionPolicy&& __exec, _Range __rng,
                      oneapi::dpl::__internal::__difference_t<_Range> __n)
 {
     //If (n > 0 && n < m), returns first + (m - n). Otherwise, if n  > 0, returns first. Otherwise, returns last.
@@ -1928,17 +1946,32 @@ __pattern_shift_left(__hetero_tag<_BackendTag>, _ExecutionPolicy&& __exec, _Rang
         oneapi::dpl::__par_backend_hetero::__parallel_for(_BackendTag{}, ::std::forward<_ExecutionPolicy>(__exec),
                                                           __brick, __size_res, __src, __dst)
             .__checked_deferrable_wait();
+        return __size_res;
     }
-    else //2. n < size/2; 'n' parallel copying
+
+    //2. A rotate by '__n' satisfies shift filling unspecified tail with moved elements, but it requires swappable types
+    if constexpr (std::is_swappable_v<oneapi::dpl::__internal::__value_t<_Range>>)
     {
-        auto __brick = unseq_backend::__brick_shift_left<_DiffType>{__size, __n};
-        oneapi::dpl::__par_backend_hetero::__parallel_for(
-            _BackendTag{},
-            oneapi::dpl::__par_backend_hetero::make_wrapped_policy<__shift_left_right>(
-                ::std::forward<_ExecutionPolicy>(__exec)),
-            __brick, __n, __rng)
-            .__checked_deferrable_wait();
+        if (__should_shift_via_rotate<oneapi::dpl::__internal::__value_t<_Range>>(_BackendTag{}, __exec, __n,
+                                                                                  __size_res))
+        {
+            oneapi::dpl::__internal::__pattern_rotate(
+                __tag,
+                oneapi::dpl::__par_backend_hetero::make_wrapped_policy<__shift_via_rotate>(
+                    std::forward<_ExecutionPolicy>(__exec)),
+                __rng, static_cast<std::size_t>(__n));
+            return __size_res;
+        }
     }
+
+    //3. n < size/2; 'n' parallel copying
+    auto __brick = unseq_backend::__brick_shift_left<_DiffType>{__size, __n};
+    oneapi::dpl::__par_backend_hetero::__parallel_for(
+        _BackendTag{},
+        oneapi::dpl::__par_backend_hetero::make_wrapped_policy<__shift_left_right>(
+            ::std::forward<_ExecutionPolicy>(__exec)),
+        __brick, __n, __rng)
+        .__checked_deferrable_wait();
 
     return __size_res;
 }

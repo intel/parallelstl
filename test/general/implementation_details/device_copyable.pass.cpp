@@ -164,6 +164,16 @@ test_device_copyable()
                       oneapi::dpl::__par_backend_hetero::__gen_mask<noop_device_copyable>, int>>,
                   "__gen_expand_count_mask is not device copyable with device copyable types");
 
+    //__gen_count_mask_and_copy
+    static_assert(sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_count_mask_and_copy<
+                      oneapi::dpl::__par_backend_hetero::__gen_mask<noop_device_copyable>, int>>,
+                  "__gen_count_mask_and_copy is not device copyable with device copyable types");
+
+    //__gen_expand_count_mask_from_copy
+    static_assert(sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_expand_count_mask_from_copy<
+                      oneapi::dpl::__par_backend_hetero::__gen_mask<noop_device_copyable>, int>>,
+                  "__gen_expand_count_mask_from_copy is not device copyable with device copyable types");
+
     //__gen_set_balanced_path
     static_assert(sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_set_balanced_path<
                       oneapi::dpl::__par_backend_hetero::__set_operation<oneapi::dpl::unseq_backend::_IntersectionTag>,
@@ -237,7 +247,7 @@ test_device_copyable()
     //__parallel_reduce_then_scan_reduce_submitter
     static_assert(
         sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__parallel_reduce_then_scan_reduce_submitter<
-            /*_Bounded*/ false, true, false,
+            true, false,
             oneapi::dpl::__par_backend_hetero::__slm_or_subgroup_tag<int_device_copyable>,
             oneapi::dpl::__par_backend_hetero::__gen_scan_by_seg_reduce_input<binary_op_device_copyable>,
             oneapi::dpl::__par_backend_hetero::__scan_by_seg_op<binary_op_device_copyable>,
@@ -471,6 +481,16 @@ test_non_device_copyable()
                       oneapi::dpl::__par_backend_hetero::__gen_mask<noop_non_device_copyable>, int>>,
                   "__gen_expand_count_mask is device copyable with non device copyable types");
 
+    //__gen_count_mask_and_copy
+    static_assert(!sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_count_mask_and_copy<
+                      oneapi::dpl::__par_backend_hetero::__gen_mask<noop_non_device_copyable>, int>>,
+                  "__gen_count_mask_and_copy is device copyable with non device copyable types");
+
+    //__gen_expand_count_mask_from_copy
+    static_assert(!sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_expand_count_mask_from_copy<
+                      oneapi::dpl::__par_backend_hetero::__gen_mask<noop_non_device_copyable>, int>>,
+                  "__gen_expand_count_mask_from_copy is device copyable with non device copyable types");
+
     //__gen_set_balanced_path
     static_assert(!sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__gen_set_balanced_path<
                       oneapi::dpl::__par_backend_hetero::__set_operation<oneapi::dpl::unseq_backend::_IntersectionTag>,
@@ -543,7 +563,7 @@ test_non_device_copyable()
     //__parallel_reduce_then_scan_reduce_submitter
     static_assert(
         !sycl::is_device_copyable_v<oneapi::dpl::__par_backend_hetero::__parallel_reduce_then_scan_reduce_submitter<
-            /*_Bounded*/ false, true, false,
+            true, false,
             oneapi::dpl::__par_backend_hetero::__slm_only_tag<int_non_device_copyable>,
             oneapi::dpl::__par_backend_hetero::__gen_scan_by_seg_reduce_input<binary_op_non_device_copyable>,
             oneapi::dpl::__par_backend_hetero::__scan_by_seg_op<binary_op_non_device_copyable>,
