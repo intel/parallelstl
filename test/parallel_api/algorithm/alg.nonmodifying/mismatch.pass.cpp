@@ -85,7 +85,7 @@ void
 test_mismatch_by_type()
 {
     using namespace std;
-    for (size_t size = 0; size <= 100000; size = size <= 16 ? size + 1 : size_t(3.1415 * size))
+    for (size_t size : get_find_test_sizes())
     {
         const T val = T(-1);
         Sequence<T> in(size, [](size_t v) -> T { return T(v % 100); });
@@ -97,6 +97,15 @@ test_mismatch_by_type()
             invoke_on_all_policies<2>()(test_mismatch_predicate<T>(), in.begin(), in.end(), in2.begin(), in2.end());
 #endif
             invoke_on_all_policies<3>()(test_mismatch_predicate<T>(), in.begin(), in.end(), in2.begin());
+
+            // A single difference in the last element
+            if (size > 0)
+            {
+                in2[size - 1] = val;
+                invoke_on_all_policies<26>()(test_mismatch<T>(), in.begin(), in.end(), in2.begin(), in2.end());
+                invoke_on_all_policies<27>()(test_mismatch_predicate<T>(), in.begin(), in.end(), in2.begin());
+                in2[size - 1] = in[size - 1];
+            }
 
             const size_t min_size = 3;
             if (size > min_size)

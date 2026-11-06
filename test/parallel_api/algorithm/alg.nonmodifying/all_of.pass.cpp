@@ -64,7 +64,7 @@ template <typename T>
 void
 test(size_t bits)
 {
-    for (size_t n = 0; n <= 100000; n = n <= 16 ? n + 1 : size_t(3.1415 * n))
+    for (size_t n : get_find_test_sizes())
     {
 
         // Sequence of odd values
@@ -81,6 +81,11 @@ test(size_t bits)
         EXPECT_EQ(in, inCopy, "all_of modified input sequence");
         if (n > 0)
         {
+            // A single miss in the last element
+            in[n - 1] = spike;
+            invoke_on_all_policies<6>()(test_all_of<T>(), in.begin(), in.end(), Parity<T>(1), false);
+            in[n - 1] = inCopy[n - 1];
+
             // Sprinkle in a miss
             in[2 * n / 3] = spike;
             invoke_on_all_policies<2>()(test_all_of<T>(), in.begin(), in.end(), Parity<T>(1), false);
