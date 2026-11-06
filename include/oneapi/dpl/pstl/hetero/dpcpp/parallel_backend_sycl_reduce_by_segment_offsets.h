@@ -773,20 +773,16 @@ struct __segmented_reduce_flat_submitter<
     }
 
     // Sub-group reduces [__base + __first, __base + __last) (non-empty) onto lane 0; lanes interleave for coalescing,
-    // reordering as commutativity allows. A segment start begins with op(init, first). Arithmetic types; 32-bit offsets
+    // reordering as commutativity allows. A segment start adds the init to the result. Arithmetic types; 32-bit offsets
     template <typename _SubGroup, typename _Size, typename _Input>
     _Acc
-    __reduce_by_sub_group(const _SubGroup __sg, const _Size __base, std::uint32_t __first, const std::uint32_t __last,
-                          const bool __is_first, const _Input __input) const
+    __reduce_by_sub_group(const _SubGroup __sg, const _Size __base, const std::uint32_t __first,
+                          const std::uint32_t __last, const bool __is_first, const _Input __input) const
     {
         const std::uint32_t __lane = __sg.get_local_linear_id();
         const std::uint32_t __sub_group_size = __sg.get_local_linear_range();
 
         // Accumulators start from their first values; an idle lane holds the init, which is passed but never used
-        oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head;
-        if (__is_first)
-            __head.__setup(__segmented_reduce_to_acc<_Acc>(
-                std::invoke(__binary_op, __init, __element(__input, __base, __first++))));
 
         // Each active lane gets >= 2 elements: an accumulator never comes from a lone element (may differ to the op)
         std::uint32_t __active = std::min<std::uint32_t>(__sub_group_size, (__last - __first) / 2);
@@ -868,12 +864,12 @@ struct __segmented_reduce_flat_submitter<
         if (__active > 0)
             __acc.__v = __segmented_reduce_lanes<_Acc>(__sg, __acc.__v, __active, __binary_op);
 
-        // A range of one element more than the initial value takes it alone
+        // A segment start adds the init; a range of one element (no active lane) takes it alone
+        if (__is_first && __active > 0)
+            return __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __acc.__v));
         if (__is_first)
-            return __active > 0       ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __head.__v, __acc.__v))
-                   : __first < __last ? __segmented_reduce_to_acc<_Acc>(
-                                            std::invoke(__binary_op, __head.__v, __element(__input, __base, __first)))
-                                      : __head.__v;
+            return __segmented_reduce_to_acc<_Acc>(
+                std::invoke(__binary_op, __init, __element(__input, __base, __first)));
 
         return __acc.__v;
     }
