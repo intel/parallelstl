@@ -202,15 +202,8 @@ struct __segmented_reduce_chunk_brick
             return;
 
         // Segment of the chunk: the first whose chunks end after it
-        _Size __lo = 0, __hi = __num_segments - 1;
-        while (__lo < __hi)
-        {
-            const _Size __mid = __lo + (__hi - __lo) / 2;
-            if (__chunk_ends[__mid] > __chunk)
-                __hi = __mid;
-            else
-                __lo = __mid + 1;
-        }
+        const _Size __lo = oneapi::dpl::__internal::__pstl_lower_bound_impl(
+            _Size{0}, __num_segments - 1, [&](const _Size __i) { return __chunk_ends[__i] <= __chunk; });
 
         const _Size __first_chunk = __lo == 0 ? _Size{0} : _Size(__chunk_ends[__lo - 1]);
         const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo], __n);
@@ -669,16 +662,10 @@ struct __segmented_reduce_flat_submitter<
             }
         }
 
-        while (__lo < __hi)
-        {
-            const _Size __mid = __lo + (__hi - __lo) / 2;
-            if (__begins_after(__mid))
-                __hi = __mid;
-            else
-                __lo = __mid + 1;
-        }
-
-        return __lo - 1;
+        // The first segment in [__lo, __hi] beginning after __v, less one
+        const _Size __after = oneapi::dpl::__internal::__pstl_lower_bound_impl(
+            __lo, __hi, [&](const _Size __i) { return !__begins_after(__i); });
+        return __after - 1;
     }
 
     // A piece's output on lane 0: head partial (state 0 none, 1 ends in the piece, 2 goes on past it) and tail partial
