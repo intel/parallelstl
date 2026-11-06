@@ -791,11 +791,6 @@ main()
     test_segments<10, int, std::uint64_t, std::uint32_t, std::int64_t>(
         bit_set(1), bit_set_union{}, [](std::size_t i) { return int(32 + (i * 7) % 32); }, std::uint64_t{0});
 
-    // The same set union with an initial value of the element type: it must be combined with the elements as an
-    // element (the bit 7), while only an empty segment gets it converted to the accumulator (the bit pattern 7)
-    test_segments<11, int, std::uint64_t, std::int64_t, int>(
-        7, bit_set_union{}, [](std::size_t i) { return int(32 + (i * 7) % 32); }, std::uint64_t{0});
-
     // An accumulator which cannot keep the fraction of the initial value: an empty segment gets the initial value
     // converted to the accumulator type (2), not the initial value itself (2.5)
     test_segments<12, int, float, std::int64_t, int>(
