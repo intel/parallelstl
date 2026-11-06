@@ -988,18 +988,24 @@ struct __segmented_reduce_flat_submitter<
         if (__sg_id != 0 || __lane >= __sub_groups)
             return;
 
-        const _Size __s = __local.__loc_tail_segments_acc[__lane];
-        if (__s < __m)
-        {
-            _Acc __acc = __local.__loc_heads_tails_acc[__sub_groups + __lane];
-            std::uint8_t __state = 2;
-            for (std::size_t __k = __lane + 1; __state == 2 && __k < __sub_groups; ++__k)
+        // Folds the heads of the pieces from __k on into __acc while the segment goes on (state 2); returns the state
+        // it stops at, 1 if the segment ends in the work-group
+        auto __chain = [&](_Acc& __acc, std::uint8_t __state, std::size_t __k) {
+            for (; __state == 2 && __k < __sub_groups; ++__k)
             {
                 __state = __local.__loc_head_states_acc[__k];
                 if (__state != 0)
                     __acc = __segmented_reduce_to_acc<_Acc>(
                         std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
             }
+            return __state;
+        };
+
+        const _Size __s = __local.__loc_tail_segments_acc[__lane];
+        if (__s < __m)
+        {
+            _Acc __acc = __local.__loc_heads_tails_acc[__sub_groups + __lane];
+            const std::uint8_t __state = __chain(__acc, 2, __lane + 1);
             if (__state == 1)
                 __result[__s] = __acc;
             if (__state != 1)
@@ -1012,14 +1018,7 @@ struct __segmented_reduce_flat_submitter<
         if (__lane == 0 && __local.__loc_head_states_acc[0] != 0)
         {
             _Acc __acc = __local.__loc_heads_tails_acc[0];
-            std::uint8_t __state = __local.__loc_head_states_acc[0];
-            for (std::size_t __k = 1; __state == 2 && __k < __sub_groups; ++__k)
-            {
-                __state = __local.__loc_head_states_acc[__k];
-                if (__state != 0)
-                    __acc = __segmented_reduce_to_acc<_Acc>(
-                        std::invoke(__binary_op, __acc, __local.__loc_heads_tails_acc[__k]));
-            }
+            __chain(__acc, __local.__loc_head_states_acc[0], 1);
             __heads[__group] = __acc;
         }
     }
