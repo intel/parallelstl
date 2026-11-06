@@ -1142,6 +1142,18 @@ struct __early_exit_find_or
         return std::make_tuple(__lo, decltype(__lo){__at(__j + 1)...});
     }
 
+    // One iteration's block of every range, in registers.
+    template <bool __offset_pair, typename... _Ranges>
+    static auto
+    __load_blocks(std::size_t __base, const _Ranges&... __rngs)
+    {
+        constexpr auto __seq = std::make_index_sequence<__elems_per_iter>{};
+        if constexpr (__offset_pair)
+            return __load_offset_pair(__rngs..., __base, __seq);
+        else
+            return std::make_tuple(__load_elems(__rngs, __base, __seq)...);
+    }
+
     template <typename _NDItemId, typename _LocalFoundState, typename _BrickTag, typename... _Ranges>
     void
     operator()(const _NDItemId __item, const std::size_t __source_data_size, const std::size_t __iters_per_work_item,
@@ -1222,13 +1234,7 @@ struct __early_exit_find_or
                 std::uint32_t __hits = 0;
                 // Each range is read before any predicate runs: interleaved reads of several ranges do not merge.
                 // The brick then reads its elements from the registers, at local index __j.
-                const auto __vals = [&]() {
-                    constexpr auto __seq = std::make_index_sequence<__elems_per_iter>{};
-                    if constexpr (decltype(__offset_pair_c)::value)
-                        return __load_offset_pair(__rngs..., __base, __seq);
-                    else
-                        return std::make_tuple(__load_elems(__rngs, __base, __seq)...);
-                }();
+                const auto __vals = __load_blocks<decltype(__offset_pair_c)::value>(__base, __rngs...);
                 std::apply(
                     [&](const auto&... __v) {
                         _ONEDPL_PRAGMA_UNROLL
