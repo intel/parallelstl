@@ -106,85 +106,6 @@ struct __get_zeroth_element
     }
 };
 
-// Storage for per-element temporary data, set at reduce and read at scan by "input generators".
-// To support block processing like in reduce-then-scan, elements are accessible via global index.
-// The offset reserves extra space at the beginning of the buffer - it's needed for 'unique'.
-template <typename _T, std::size_t __offset>
-struct __block_storage : public __device_storage<_T>
-{
-    struct __view
-    {
-        using value_type = _T;
-        using __acc_t = sycl::accessor<_T, 1, sycl::access_mode::read_write, __dpl_sycl::__target_device>;
-        std::size_t __block_sz = 0;
-        _T* __data = nullptr;
-        __acc_t __acc;
-
-        // Element access is only valid in device code
-        _T&
-        operator[](std::size_t __lidx) const
-        {
-            // __lidx must be within [0, __block_sz + __offset)
-            return __data ? __data[__lidx] : __acc[__lidx];
-        }
-
-        std::size_t
-        __local_index(std::size_t __gidx)
-        {
-            // If __offset is non-zero, __gidx should not be less than __offset.
-            // In practice, __offset is 1 for __is_unique_pattern_v, which handles the index 0 specially.
-            return (__gidx - __offset) % __block_sz + __offset;
-        }
-
-        // ADL-discoverable call used by __ranges::__require_access in utils_ranges_sycl.h
-        friend void
-        __require_access_range(sycl::handler& __cgh, __view& __v)
-        {
-            assert(__v.__block_sz > 0); // check that the view was properly constructed
-            if (__v.__acc.size() != 0)
-                __cgh.require(__v.__acc);
-        }
-    };
-
-    std::size_t __block_sz = 0;
-
-    __block_storage(const sycl::queue& __q, std::size_t __n) : __block_sz(__n)
-    {
-        this->__initialize(__q, __n + __offset);
-    }
-
-    __view
-    __all_view()
-    {
-        // checking the buffer size is the simplest way to cover both "no device USM"
-        // and _ONEDPL_SYCL2020_DEFAULT_ACCESSOR_CONSTRUCTOR_BROKEN
-        if (this->__sycl_buf.size() != 0)
-            return __view{__block_sz, this->__usm_buf.get(), {this->__sycl_buf}};
-        else
-            return __view{__block_sz, this->__usm_buf.get(), {}};
-    }
-};
-
-template <typename _Range, typename _T, std::size_t __offset>
-auto
-__zip_with_block_storage(_Range&& __rng, __block_storage<_T, __offset>& __blockbuf)
-{
-    return oneapi::dpl::__ranges::make_zip_view(std::forward<_Range>(__rng), __blockbuf.__all_view());
-}
-
-template <std::size_t __offset>
-struct __block_storage<void, __offset>
-{
-    __block_storage(const sycl::queue&, std::size_t) {}
-};
-
-template <typename _Range, std::size_t __offset>
-auto
-__zip_with_block_storage(_Range&& __rng, __block_storage<void, __offset>&)
-{
-    return std::forward<_Range>(__rng);
-}
-
 // *** Write Operations ***
 
 // Writes a single element to the output range at the specified index, `__id`. The value to write is passed in as `__v`.
@@ -2499,8 +2420,8 @@ __parallel_transform_reduce_then_scan_impl(
     const std::uint32_t __work_group_size = (__max_work_group_size / __max_sub_group_size) * __max_sub_group_size;
 
     // use work groups to match the number of compute units
-    const std::uint32_t __max_compute_units =
-        __q.get_device().template get_info<sycl::info::device::max_compute_units>();
+    const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
+    const std::uint32_t __max_compute_units = __compute_units.__max_compute_units;
 
     std::size_t __inputs_remaining = __n;
     if constexpr (__is_unique_pattern_v)
@@ -2517,8 +2438,7 @@ __parallel_transform_reduce_then_scan_impl(
 
     if (__target_is_gpu)
     {
-        // Assume 8 compute units per GPU core
-        const std::uint32_t __num_xe_cores = std::max(1u, __max_compute_units / 8);
+        const std::uint32_t __num_xe_cores = __compute_units.__num_xe_cores;
         std::size_t __last_level_cache_size_bytes =
             __q.get_device().template get_info<sycl::info::device::global_mem_cache_size>();
         if (__last_level_cache_size_bytes == 0)

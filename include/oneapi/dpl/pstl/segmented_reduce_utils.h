@@ -13,7 +13,7 @@
 #include <functional>  // std::invoke
 #include <iterator>    // std::iterator_traits
 #include <type_traits> // std::decay_t, std::invoke_result_t, std::common_type_t, std::make_unsigned_t, ...
-#include <utility>     // std::move, std::forward
+#include <utility>     // std::move
 
 #include "onedpl_config.h"
 
@@ -24,38 +24,33 @@ namespace dpl
 namespace __internal
 {
 
-// The helpers of reduce_by_segment with segments defined by offsets, shared by the host and the device implementations
+// Helpers of reduce_by_segment with offsets, shared by host and device
 
+// The accumulator type: the decayed result of op(init, *first)
 template <typename _InitType, typename _InputIterator, typename _BinaryOperation>
 using __segmented_reduce_acc_t = std::decay_t<
     std::invoke_result_t<_BinaryOperation&, _InitType, typename std::iterator_traits<_InputIterator>::reference>>;
 
-// The accumulator made from the initial value of an empty segment or from a result of the operation: by an implicit
-// conversion, as the RFC requires both to be convertible to the accumulator type
-template <typename _Acc, typename _Value>
-_Acc
-__segmented_reduce_to_acc(_Value&& __value)
-{
-    return std::forward<_Value>(__value);
-}
-
-// Reduces the elements [__begin, __end) of a random access iterator or a range into an accumulator made from the
-// initial value; an empty range gives the initial value converted to the accumulator type
+// Reduces [__begin, __end) into an accumulator made from __init; an empty range gives __init converted to _Acc
 template <typename _Acc, typename _Source, typename _Index, typename _InitType, typename _BinaryOperation>
 _Acc
 __segmented_reduce_serial(const _Source& __src, _Index __begin, _Index __end, _InitType __init,
                           _BinaryOperation& __binary_op)
 {
-    _Acc __acc = __segmented_reduce_to_acc<_Acc>(std::move(__init));
-    // Unrolled on a device, where a work-item reducing alone would wait for every load
+    // Copy-initialization: the RFC requires implicit conversions to _Acc
+    _Acc __acc = std::move(__init);
+
+    // Hides load latency on a device
 #if defined(__SYCL_DEVICE_ONLY__)
     _ONEDPL_PRAGMA(unroll 16)
 #endif
     for (; __begin < __end; ++__begin)
         __acc = std::invoke(__binary_op, std::move(__acc), __src[__begin]);
+
     return __acc;
 }
 
+// Clamps an offset to [0, __n]; compared as unsigned after the sign check, whatever the widths
 template <typename _Offset, typename _Size>
 constexpr _Size
 __segmented_reduce_clamp_offset(_Offset __offset, _Size __n)
@@ -63,12 +58,13 @@ __segmented_reduce_clamp_offset(_Offset __offset, _Size __n)
     constexpr bool __is_offset = std::is_integral_v<_Offset> && !std::is_same_v<_Offset, bool>;
     static_assert(__is_offset, "The offsets of reduce_by_segment must be of an integral type other than bool");
 
-    // An int in place of an offset of another type keeps the static_assert the only error
+    // int in place of a non-integral _Offset keeps the static_assert the only error
     using _Unsigned = std::common_type_t<std::make_unsigned_t<std::conditional_t<__is_offset, _Offset, int>>,
                                          std::make_unsigned_t<_Size>>;
 
     if (__offset <= 0)
         return 0;
+
     return static_cast<_Unsigned>(__offset) < static_cast<_Unsigned>(__n) ? static_cast<_Size>(__offset) : __n;
 }
 
