@@ -607,6 +607,20 @@ struct __segmented_reduce_flat_submitter<
                            __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __c, __d)));
     }
 
+    // Folds __get(__i) into __acc for __i from __i below __end by __stride: four values an op while they last
+    template <typename _Get>
+    void
+    __fold_strided(_Acc& __acc, std::uint32_t __i, const std::uint32_t __end, const std::uint32_t __stride,
+                   _Get __get) const
+    {
+        for (; __i + 3 * __stride < __end; __i += 4 * __stride)
+            __acc = std::invoke(__binary_op, __acc,
+                                __reduce_four(__get(__i), __get(__i + __stride), __get(__i + 2 * __stride),
+                                              __get(__i + 3 * __stride)));
+        for (; __i < __end; __i += __stride)
+            __acc = std::invoke(__binary_op, __acc, __get(__i));
+    }
+
     // Index of the last of __m segments beginning at or before __v, or -1, searched from __guess in [0, __m - 1]:
     // doubling steps bracket the answer, then binary search, so a close guess takes a few reads, not log2(__m)
     template <typename _Size, typename _OffsetRange>
@@ -753,15 +767,8 @@ struct __segmented_reduce_flat_submitter<
                     };
                     if (__lane < __active)
                     {
-                        std::uint32_t __k = __lane;
-                        __acc.__setup(__load4(__k));
-                        for (__k += __active; __k + 3 * __active < __nv; __k += 4 * __active)
-                            __acc.__v =
-                                std::invoke(__binary_op, __acc.__v,
-                                            __reduce_four(__load4(__k), __load4(__k + __active),
-                                                          __load4(__k + 2 * __active), __load4(__k + 3 * __active)));
-                        for (; __k < __nv; __k += __active)
-                            __acc.__v = std::invoke(__binary_op, __acc.__v, __load4(__k));
+                        __acc.__setup(__load4(__lane));
+                        __fold_strided(__acc.__v, __lane + __active, __nv, __active, __load4);
                     }
 
                     // Unaligned head and tail, at most three elements each (one for 8 bytes), to lane 0
@@ -778,17 +785,11 @@ struct __segmented_reduce_flat_submitter<
 
         if (!__by_vectors && __lane < __active)
         {
-            std::uint32_t __i = __first + __lane;
+            const std::uint32_t __i = __first + __lane;
             __acc.__setup(__segmented_reduce_to_acc<_Acc>(
                 std::invoke(__binary_op, __element(__input, __base, __i), __element(__input, __base, __i + __active))));
-            for (__i += 2 * __active; __i + 3 * __active < __last; __i += 4 * __active)
-                __acc.__v = std::invoke(__binary_op, __acc.__v,
-                                        __reduce_four(__element(__input, __base, __i),
-                                                      __element(__input, __base, __i + __active),
-                                                      __element(__input, __base, __i + 2 * __active),
-                                                      __element(__input, __base, __i + 3 * __active)));
-            for (; __i < __last; __i += __active)
-                __acc.__v = std::invoke(__binary_op, __acc.__v, __element(__input, __base, __i));
+            __fold_strided(__acc.__v, __i + 2 * __active, __last, __active,
+                           [&](std::uint32_t __j) { return __element(__input, __base, __j); });
         }
         if (__lane >= __active)
             __acc.__setup(__segmented_reduce_to_acc<_Acc>(__init));
@@ -833,16 +834,8 @@ struct __segmented_reduce_flat_submitter<
             const std::uint32_t __hi = std::uint32_t(__me - __piece_begin);
             _Acc __acc = __segmented_reduce_to_acc<_Acc>(
                 std::invoke(__binary_op, __init, __element(__input, __piece_begin, __lo)));
-            std::uint32_t __i = __lo + 1;
-            for (; __i + 3 < __hi; __i += 4)
-                __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(
-                    __binary_op, __acc,
-                    __reduce_four(__element(__input, __piece_begin, __i), __element(__input, __piece_begin, __i + 1),
-                                  __element(__input, __piece_begin, __i + 2),
-                                  __element(__input, __piece_begin, __i + 3))));
-            for (; __i < __hi; ++__i)
-                __acc = __segmented_reduce_to_acc<_Acc>(
-                    std::invoke(__binary_op, __acc, __element(__input, __piece_begin, __i)));
+            __fold_strided(__acc, __lo + 1, __hi, 1,
+                           [&](std::uint32_t __j) { return __element(__input, __piece_begin, __j); });
             __result[__mine] = __acc;
         }
 
@@ -1046,14 +1039,8 @@ struct __segmented_reduce_flat_submitter<
             __acc.__setup(__first_head[__lane]);
         if (__lane >= __heads_count)
             __acc.__setup(__tail);
-        std::uint32_t __k = __lane + __sub_group_size;
-        for (; __k + 3 * __sub_group_size < __heads_count; __k += 4 * __sub_group_size)
-            __acc.__v = std::invoke(__binary_op, __acc.__v,
-                                    __reduce_four(__first_head[__k], __first_head[__k + __sub_group_size],
-                                                  __first_head[__k + 2 * __sub_group_size],
-                                                  __first_head[__k + 3 * __sub_group_size]));
-        for (; __k < __heads_count; __k += __sub_group_size)
-            __acc.__v = std::invoke(__binary_op, __acc.__v, __first_head[__k]);
+        __fold_strided(__acc.__v, __lane + __sub_group_size, __heads_count, __sub_group_size,
+                       [&](std::uint32_t __k) { return __first_head[__k]; });
         __acc.__v = __segmented_reduce_lanes<_Acc>(
             __sg, __acc.__v, std::min<std::uint32_t>(__heads_count, __sub_group_size), __binary_op);
         if (__lane == 0)
