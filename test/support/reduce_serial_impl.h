@@ -10,11 +10,10 @@
 #ifndef _REDUCE_SERIAL_IMPL_H
 #define _REDUCE_SERIAL_IMPL_H
 
-#include <algorithm>   // std::max
-#include <cstdint>     // std::uint64_t
+#include <algorithm>   // std::max, std::min
 #include <iterator>    // std::iterator_traits
-#include <type_traits> // std::decay_t, std::invoke_result_t, std::is_signed_v
-#include <utility>     // std::move, std::forward
+#include <type_traits> // std::common_type_t, std::decay_t, std::invoke_result_t
+#include <utility>     // std::move
 
 template <typename RandAccessItKeysIn, typename RandAccessItValsIn, typename RandAccessItKeysOut,
           typename RandAccessItValsOut, typename Size, typename BinaryPredicate, typename BinaryOperation>
@@ -53,47 +52,33 @@ reduce_by_segment_serial(RandAccessItKeysIn keys, RandAccessItValsIn vals,
 }
 
 // Reference of reduce_by_segment with segments defined by offsets: the segment s is [offsets[s], offsets[s + 1])
-// clamped to the input [0, last - first), reduced as std::ranges::fold_left from init_value; an empty segment gives
-// init_value converted to the accumulator type, and a non-positive num_segments writes nothing.
+// clamped to the input [0, last - first), and a non-positive num_segments writes nothing.
 template <typename RandAccessItIn, typename RandAccessItOffsets, typename RandAccessItOut, typename SegmentNum,
           typename Init, typename BinaryOperation>
-void
+RandAccessItOut
 reduce_by_segment_offsets_serial(RandAccessItIn first, RandAccessItIn last, RandAccessItOffsets offsets,
                                  SegmentNum num_segments, Init init_value, BinaryOperation binary_op,
                                  RandAccessItOut result)
 {
-    // The accumulator type of the algorithm
     using AccT = std::decay_t<
         std::invoke_result_t<BinaryOperation&, Init, typename std::iterator_traits<RandAccessItIn>::reference>>;
-    using Size = typename std::iterator_traits<RandAccessItIn>::difference_type;
+    using OffsetT = typename std::iterator_traits<RandAccessItOffsets>::value_type;
+    using SizeT = typename std::iterator_traits<RandAccessItIn>::difference_type;
+    using CommonIndexT = std::common_type_t<OffsetT, SizeT>;
 
-    // init_value and the results of the operation become an AccT implicitly: the RFC requires them to be convertible
-    auto to_acc = [](auto&& value) -> AccT { return std::forward<decltype(value)>(value); };
-
-    const Size n = last - first;
-    auto clamp = [n](auto offset) -> Size {
-        if constexpr (std::is_signed_v<decltype(offset)>)
-        {
-            if (offset < 0)
-                return 0;
-        }
-        return std::uint64_t(offset) < std::uint64_t(n) ? Size(offset) : n;
-    };
-    for (SegmentNum s = 0; s < num_segments; ++s)
+    const SizeT n = last - first;
+    SegmentNum s = 0;
+    for (; s < num_segments; ++s)
     {
-        const Size begin = clamp(offsets[s]);
-        const Size end = std::max(begin, clamp(offsets[s + 1]));
-        // A left fold with an AccT accumulator, which combines init_value itself with the first element
-        if (begin == end)
-        {
-            result[s] = to_acc(init_value);
-            continue;
-        }
-        AccT acc = to_acc(binary_op(init_value, first[begin]));
-        for (Size i = begin + 1; i < end; ++i)
+        const OffsetT s_first_idx = std::max<OffsetT>(offsets[s], OffsetT(0));
+        const OffsetT s_last_idx = std::max<OffsetT>(std::min<CommonIndexT>(offsets[s + 1], n), OffsetT(0));
+
+        AccT acc = init_value;
+        for (OffsetT i = s_first_idx; i < s_last_idx; ++i)
             acc = binary_op(std::move(acc), first[i]);
         result[s] = std::move(acc);
     }
+    return result + s;
 }
 
 #endif //_REDUCE_SERIAL_IMPL_H
