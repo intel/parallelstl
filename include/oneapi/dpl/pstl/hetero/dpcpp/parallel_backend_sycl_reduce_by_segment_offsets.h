@@ -606,9 +606,9 @@ struct __segmented_reduce_flat_submitter<
     };
 
     // Op on four values as two accumulator pairs; by value so all four load before the op waits on any
-    template <typename _A, typename _B, typename _C, typename _D>
+    template <typename _T>
     _Acc
-    __reduce_four(_A __a, _B __b, _C __c, _D __d) const
+    __reduce_four(_T __a, _T __b, _T __c, _T __d) const
     {
         return std::invoke(__binary_op, __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __a, __b)),
                            __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __c, __d)));
