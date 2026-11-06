@@ -560,37 +560,35 @@ struct __segmented_reduce_flat_submitter<
 
                 const __segmented_reduce_flat_local<__in_group_v, _Acc, _Size> __local(__cgh, __sub_groups);
 
-                const sycl::nd_range<1> __range(sycl::range<1>(__num_groups * __work_group_size),
-                                                sycl::range<1>(__work_group_size));
-                auto __kernel = [=, *this](
-                                    sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
-                    _Size* const __tail_segment_of = reinterpret_cast<_Size*>(__units_acc.__data());
-                    _Acc* const __heads = reinterpret_cast<_Acc*>(__units_acc.__data() + __segment_slots);
-                    _Acc* const __tails = __heads + __num_units;
+                __cgh.parallel_for<std::conditional_t<__in_group_v, _GroupName, _Name>...>(
+                    sycl::nd_range<1>(sycl::range<1>(__num_groups * __work_group_size),
+                                      sycl::range<1>(__work_group_size)),
+                    [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
+                        _Size* const __tail_segment_of = reinterpret_cast<_Size*>(__units_acc.__data());
+                        _Acc* const __heads = reinterpret_cast<_Acc*>(__units_acc.__data() + __segment_slots);
+                        _Acc* const __tails = __heads + __num_units;
 
-                    const auto __sg = __item.get_sub_group();
-                    const std::uint32_t __lane = __sg.get_local_linear_id();
-                    const std::uint32_t __sg_id = __sg.get_group_linear_id();
-                    const std::uint32_t __group = __item.get_group(0);
-                    const std::uint32_t __piece = __group * std::uint32_t(__sub_groups) + __sg_id;
-                    // In 64 bits: the product may exceed 32 bits before clamping to __n
-                    const _Size __piece_begin = std::min<_Size>(__n, _Size(std::size_t(__piece) * __piece_size));
-                    const _Size __piece_end = std::min<_Size>(__n, __piece_begin + _Size(__piece_size));
+                        const auto __sg = __item.get_sub_group();
+                        const std::uint32_t __lane = __sg.get_local_linear_id();
+                        const std::uint32_t __sg_id = __sg.get_group_linear_id();
+                        const std::uint32_t __group = __item.get_group(0);
+                        const std::uint32_t __piece = __group * std::uint32_t(__sub_groups) + __sg_id;
+                        // In 64 bits: the product may exceed 32 bits before clamping to __n
+                        const _Size __piece_begin = std::min<_Size>(__n, _Size(std::size_t(__piece) * __piece_size));
+                        const _Size __piece_end = std::min<_Size>(__n, __piece_begin + _Size(__piece_size));
 
-                    __piece_parts<_Size> __parts{__m};
+                        __piece_parts<_Size> __parts{__m};
 
-                    if (__piece_begin < __piece_end)
-                        __reduce_piece(__sg, __input, __offsets, __result, __n, __m, __piece_begin, __piece_end,
-                                       __estimate, __interpolation_steps, __parts);
+                        if (__piece_begin < __piece_end)
+                            __reduce_piece(__sg, __input, __offsets, __result, __n, __m, __piece_begin, __piece_end,
+                                           __estimate, __interpolation_steps, __parts);
 
-                    if constexpr (__in_group_v)
-                        __combine_pieces_in_group(__item, __sg_id, __lane, __group, __sub_groups, __m, __parts, __local,
-                                                  __result, __heads, __tails, __tail_segment_of);
-                    else
-                        __store_piece_parts(__lane, __piece, __m, __parts, __heads, __tails, __tail_segment_of);
-                };
-
-                __cgh.parallel_for<std::conditional_t<__in_group_v, _GroupName, _Name>...>(__range, __kernel);
+                        if constexpr (__in_group_v)
+                            __combine_pieces_in_group(__item, __sg_id, __lane, __group, __sub_groups, __m, __parts,
+                                                      __local, __result, __heads, __tails, __tail_segment_of);
+                        else
+                            __store_piece_parts(__lane, __piece, __m, __parts, __heads, __tails, __tail_segment_of);
+                    });
             });
         };
 
