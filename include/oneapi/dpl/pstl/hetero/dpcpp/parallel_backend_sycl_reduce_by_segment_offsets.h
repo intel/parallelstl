@@ -284,6 +284,14 @@ struct __segmented_reduce_pointer_input<
 };
 
 // The launch of the flat path
+// Hardware threads of a device: the unit of the input thresholds of the GPU paths
+inline std::size_t
+__segmented_reduce_hw_threads(const oneapi::dpl::__internal::__device_compute_units& __compute_units)
+{
+    return std::max<std::size_t>(1, std::size_t{__compute_units.__max_compute_units} *
+                                        __compute_units.__threads_per_compute_unit);
+}
+
 struct __segmented_reduce_flat_geometry
 {
     std::size_t __work_group_size = {}; // multiple of the sub-group size
@@ -405,8 +413,7 @@ struct __segmented_reduce_flat_tuning
                                            __sub_group_size * __sub_group_size);
         const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
         const std::size_t __min_groups = 2 * std::size_t{__compute_units.__num_xe_cores};
-        const std::size_t __hw_threads =
-            std::size_t{__compute_units.__max_compute_units} * __compute_units.__threads_per_compute_unit;
+        const std::size_t __hw_threads = __segmented_reduce_hw_threads(__compute_units);
         const std::size_t __items = _Band::__items(__hw_threads, __min_groups, __work_group_size);
         const std::size_t __inputs_per_item =
             std::clamp<std::size_t>(oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items),
@@ -1147,10 +1154,24 @@ struct __segmented_reduce_group_tuning
     static constexpr std::size_t __max_input = std::size_t(1) << 12;
     static_assert(__max_input <= std::numeric_limits<std::uint32_t>::max());
 
+    // With at least this many segments, a work-group per segment still wins up to this many elements and segments per
+    // hardware thread of the device: the segments keep enough work-groups busy
+    static constexpr std::size_t __min_segments_beyond = 16;
+    static constexpr std::size_t __max_inputs_per_thread = 4;
+
     static bool
-    __applies(const std::size_t __n, const std::size_t __m)
+    __applies(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
-        return __n <= __max_input && __m <= __max_input;
+        if (__n <= __max_input && __m <= __max_input)
+            return true;
+        if (__m < __min_segments_beyond)
+            return false;
+
+        const std::size_t __hw_threads =
+            __segmented_reduce_hw_threads(oneapi::dpl::__internal::__device_compute_units(__q));
+        const std::size_t __max_input_beyond =
+            std::min<std::size_t>(std::numeric_limits<std::uint32_t>::max(), __max_inputs_per_thread * __hw_threads);
+        return __n <= __max_input_beyond && __m <= __max_input_beyond;
     }
 
     // Power-of-two sub-groups, about the average segment length in work-items, within the bounds
@@ -1332,7 +1353,7 @@ struct __parallel_reduce_by_segment_offsets
             {
                 using _CustomName = oneapi::dpl::__internal::__policy_kernel_name<_ExecutionPolicy>;
 
-                if (_GroupTuning::__applies(std::size_t(__n), std::size_t(__m)))
+                if (_GroupTuning::__applies(__q, std::size_t(__n), std::size_t(__m)))
                     __reduce_by_groups<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
                 else
                     __reduce_flat<_CustomName>(__q, __input, __offsets, __result, __n, __m, __init, __binary_op);
