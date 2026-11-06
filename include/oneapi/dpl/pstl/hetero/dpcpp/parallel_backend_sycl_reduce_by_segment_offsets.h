@@ -878,8 +878,8 @@ struct __segmented_reduce_flat_submitter<
         return __acc.__v;
     }
 
-    // Run of very short segments from __s, a lane each, up to the first longer one: reduced from op(init, first),
-    // empty and reversed ones get the init. Returns the run's segment count and its last segment's end.
+    // Run of very short segments from __s, a lane each, up to the first longer one: each reduced into an accumulator
+    // made from the init, which empty and reversed ones get. Returns the run's length and its last segment's end.
     template <typename _SubGroup, typename _InRange, typename _OffsetRange, typename _OutRange, typename _Size>
     std::pair<std::uint32_t, _Size>
     __reduce_tiny_run(const _SubGroup __sg, const _InRange __input, const _OffsetRange __offsets,
@@ -900,16 +900,13 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __count = __dpl_sycl::__reduce_over_group(
             __sg, __run ? std::uint32_t(_Tuning::__sub_group_size) : __lane, sycl::minimum<std::uint32_t>());
 
-        if (__lane < __count && __mb >= __me)
-            __result[__mine] = __init_acc;
-        if (__lane < __count && __mb < __me)
+        if (__lane < __count)
         {
-            // Within the piece, whose size fits in 32 bits
+            // Within the piece, whose size fits in 32 bits; an empty or reversed segment reduces nothing
             const std::uint32_t __lo = std::uint32_t(__mb - __piece_begin);
-            const std::uint32_t __hi = std::uint32_t(__me - __piece_begin);
-            _Acc __acc = __segmented_reduce_to_acc<_Acc>(
-                std::invoke(__binary_op, __init, __element(__input, __piece_begin, __lo)));
-            std::uint32_t __i = __lo + 1;
+            const std::uint32_t __hi = __mb < __me ? std::uint32_t(__me - __piece_begin) : __lo;
+            _Acc __acc = __init_acc;
+            std::uint32_t __i = __lo;
             for (; __i + 3 < __hi; __i += 4)
                 __acc = __segmented_reduce_to_acc<_Acc>(std::invoke(
                     __binary_op, __acc,
