@@ -1351,8 +1351,8 @@ struct __parallel_reduce_by_segment_offsets
         const _Size __chunk_size = _ChunkTuning::__chunk_size(__is_gpu, __max_length);
 
         // Chunk ends per segment: inclusive scan of chunk counts from adjacent offsets. Its future keeps the scan's
-        // temporaries alive until combining ends. The temporaries are device USM or, without it, SYCL buffers; each
-        // step also starts on the device after the previous one
+        // temporaries alive until combining ends, which waits for all three steps: each starts on the device after
+        // the previous one. The temporaries are device USM or, without it, SYCL buffers
         sycl::queue __q = __exec.queue();
         __block_storage<_Size, 0> __chunk_ends{__q, std::size_t(__m)};
         auto __scan = __parallel_transform_scan(
@@ -1386,8 +1386,6 @@ struct __parallel_reduce_by_segment_offsets
                        oneapi::dpl::__ranges::make_zip_view(__result))
             .event()
             .wait_and_throw();
-
-        __scan.event().wait_and_throw();
     }
 };
 
