@@ -307,10 +307,9 @@ struct __segmented_reduce_flat_tuning
 {
     static constexpr std::size_t __sub_group_size = 32;
 
-    // Min elements per work-item for small inputs (4x above) to amortize the search and combination; max 4x, so
-    // larger inputs spread over more work-groups than the device runs at once
+    // Min elements per work-item for small inputs to amortize the search and combination; the max (4x), which larger
+    // inputs with long segments take, so that they spread over more work-groups than the device runs at once
     static constexpr std::size_t __min_inputs_per_item = 16;
-    static constexpr std::size_t __large_min_inputs_per_item = 4 * __min_inputs_per_item;
     static constexpr std::size_t __max_inputs_per_item = 4 * __min_inputs_per_item;
 
     // An input is small up to this many elements per hardware thread of the device
@@ -325,8 +324,8 @@ struct __segmented_reduce_flat_tuning
     // Average segment length up to which walking a piece costs more than its loads: size pieces to fill HW threads
     static constexpr std::size_t __short_average_segment = 2048;
 
+    // Work-group size limit of both kernels
     static constexpr std::size_t __work_group_size_limit = 256;
-    static constexpr std::size_t __tail_work_group_size_limit = 256;
 
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
@@ -389,7 +388,7 @@ struct __segmented_reduce_flat_tuning
         static std::size_t
         __min_inputs(const std::size_t __n, const std::size_t __hw_threads)
         {
-            return __is_small(__n, __hw_threads) ? __min_inputs_per_item : __large_min_inputs_per_item;
+            return __is_small(__n, __hw_threads) ? __min_inputs_per_item : __max_inputs_per_item;
         }
     };
 
@@ -604,7 +603,7 @@ struct __segmented_reduce_flat_submitter<
             // Whole sub-groups within the device limit
             const std::size_t __tail_work_group_size =
                 std::max(__sub_group_size,
-                         oneapi::dpl::__internal::__max_work_group_size(__q, _Tuning::__tail_work_group_size_limit) /
+                         oneapi::dpl::__internal::__max_work_group_size(__q, _Tuning::__work_group_size_limit) /
                              __sub_group_size * __sub_group_size);
             const std::uint32_t __tail_sub_groups = __tail_work_group_size / __sub_group_size;
             const std::size_t __tail_groups =
@@ -1132,8 +1131,9 @@ struct __segmented_reduce_flat_submitter<
 // local memory. Tuned on GPUs.
 struct __segmented_reduce_group_tuning
 {
-    static constexpr std::size_t __sub_group_size = 32;
-    static constexpr std::size_t __work_group_size_limit = 256;
+    // As on the flat path, whose sub-group size the dispatch checks for both
+    static constexpr std::size_t __sub_group_size = __segmented_reduce_flat_tuning::__sub_group_size;
+    static constexpr std::size_t __work_group_size_limit = __segmented_reduce_flat_tuning::__work_group_size_limit;
 
     // Up to this many elements and segments, a work-group per segment beats the flat path's second kernel for any
     // lengths; above, a few long segments leave the device idle. Positions within a segment fit in 32 bits.
