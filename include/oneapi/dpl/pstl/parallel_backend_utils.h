@@ -43,8 +43,8 @@ template <typename _Tp, template <typename _T> typename _TAllocator>
 class __buffer_impl
 {
     _TAllocator<_Tp> _M_allocator;
-    _Tp* _M_ptr = nullptr;
-    const ::std::size_t _M_buf_size = 0;
+    _Tp* const _M_ptr;
+    const std::size_t _M_buf_size;
 
     __buffer_impl(const __buffer_impl&) = delete;
     void
