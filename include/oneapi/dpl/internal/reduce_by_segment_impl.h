@@ -283,7 +283,8 @@ __reduce_by_segment_offsets_by_pieces(_BackendTag, _IsVector, _ExecutionPolicy& 
     // every segment that starts and ends in it; the segment continuing from the previous piece (the head) and the one
     // continuing into the next piece (the tail, with the initial value) leave partial results, combined serially in
     // the order of the pieces. A segment belongs to the piece holding its start, the empty ones at the end of the
-    // input to the last piece. Unordered offsets give unspecified results but no access out of the bounds.
+    // input to the last piece. Unordered offsets give unspecified results but no access out of the bounds. The pass
+    // has a grain of one piece, as the OpenMP backend would otherwise run up to 2048 of them in one task.
     const _Size __num_pieces = std::max<_Size>(1, __n / _Size(__segmented_reduce_host_piece));
     const _Size __piece = (__n + __num_pieces - 1) / __num_pieces;
     // The first segment starting at __x or later, __m if none
@@ -458,8 +459,7 @@ __reduce_by_segment_offsets_impl(__internal::__parallel_tag<_IsVector>, _Executi
     };
 
     // The __parallel_for over the segments has a grain of about __threshold elements on average, so that many short
-    // segments do not make a task each; the one over the chunks has a grain of one, as the OpenMP backend would
-    // otherwise run up to 2048 of them in one task
+    // segments do not make a task each; the one over the chunks has a grain of one, so that every chunk is a task
     const std::size_t __segment_grain = std::size_t(std::max<_Size>(1, __threshold / std::max<_Size>(1, __n / __m)));
     __internal::__except_handler([&]() {
         // The short segments, in parallel over the segments; the long ones, at most n / __threshold of them unless the
