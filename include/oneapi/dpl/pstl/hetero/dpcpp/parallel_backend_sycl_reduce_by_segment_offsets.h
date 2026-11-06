@@ -864,14 +864,10 @@ struct __segmented_reduce_flat_submitter<
         if (__active > 0)
             __acc.__v = __segmented_reduce_lanes<_Acc>(__sg, __acc.__v, __active, __binary_op);
 
-        // A segment start adds the init; a range of one element (no active lane) takes it alone
-        if (__is_first && __active > 0)
-            return __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __acc.__v));
-        if (__is_first)
-            return __segmented_reduce_to_acc<_Acc>(
-                std::invoke(__binary_op, __init, __element(__input, __base, __first)));
-
-        return __acc.__v;
+        // A range of one element (no active lane) is that element; a segment start adds the init
+        const _Acc __total =
+            __active > 0 ? __acc.__v : __segmented_reduce_to_acc<_Acc>(__element(__input, __base, __first));
+        return __is_first ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __total)) : __total;
     }
 
     // Run of very short segments from __s, a lane each, up to the first longer one: each reduced into an accumulator
@@ -937,10 +933,7 @@ struct __segmented_reduce_flat_submitter<
         if (__lo < __hi)
         {
             const bool __first = __b >= __piece_begin;
-            // A range of one element that does not begin its segment is that element
-            const _Acc __acc = !__first && __hi - __lo == 1
-                                   ? __segmented_reduce_to_acc<_Acc>(__element(__input, __piece_begin, __lo))
-                                   : __reduce_by_sub_group(__sg, __piece_begin, __lo, __hi, __first, __input);
+            const _Acc __acc = __reduce_by_sub_group(__sg, __piece_begin, __lo, __hi, __first, __input);
 
             const bool __ends_in_piece = __e <= __piece_end;
 
