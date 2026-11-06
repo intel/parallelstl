@@ -312,14 +312,12 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __min_inputs_per_item = 16;
     static constexpr std::size_t __max_inputs_per_item = 4 * __min_inputs_per_item;
 
-    // An input is small up to this many elements per hardware thread of the device
+    // An input is small, or tiny, up to this many elements per hardware thread of the device; short segments of small
+    // and tiny inputs take fewer elements per work-item, so that more sub-groups share them
     static constexpr std::size_t __small_inputs_per_thread = 1024;
-
-    static bool
-    __is_small(const std::size_t __n, const std::size_t __hw_threads)
-    {
-        return __n <= __small_inputs_per_thread * __hw_threads;
-    }
+    static constexpr std::size_t __tiny_inputs_per_thread = 256;
+    static constexpr std::size_t __small_min_inputs_per_item = 8;
+    static constexpr std::size_t __tiny_min_inputs_per_item = 4;
 
     // Average segment length up to which walking a piece costs more than its loads: size pieces to fill HW threads
     static constexpr std::size_t __short_average_segment = 2048;
@@ -350,62 +348,12 @@ struct __segmented_reduce_flat_tuning
         return __m > __pieces ? 2 : 0;
     }
 
-    // Bands by average segment length (__n / __m). Short: a piece per HW thread, fewer elements per work-item for
-    // small inputs so more sub-groups share them
-    struct __short_segments
-    {
-        // An input is tiny up to this many elements per hardware thread of the device
-        static constexpr std::size_t __tiny_inputs_per_thread = 256;
-        static constexpr std::size_t __tiny_min_inputs_per_item = 4;
-        static constexpr std::size_t __small_min_inputs_per_item = 8;
-
-        static std::size_t
-        __items(const std::size_t __hw_threads, const std::size_t /*__min_groups*/,
-                const std::size_t /*__work_group_size*/)
-        {
-            return std::max<std::size_t>(1, __hw_threads) * __sub_group_size;
-        }
-
-        static std::size_t
-        __min_inputs(const std::size_t __n, const std::size_t __hw_threads)
-        {
-            return __n <= __tiny_inputs_per_thread * __hw_threads ? __tiny_min_inputs_per_item
-                   : __is_small(__n, __hw_threads)                ? __small_min_inputs_per_item
-                                                                  : __min_inputs_per_item;
-        }
-    };
-
-    // Long: twice as many work-groups as Xe cores, as in reduce-then-scan
-    struct __long_segments
-    {
-        static std::size_t
-        __items(const std::size_t /*__hw_threads*/, const std::size_t __min_groups,
-                const std::size_t __work_group_size)
-        {
-            return __min_groups * __work_group_size;
-        }
-
-        static std::size_t
-        __min_inputs(const std::size_t __n, const std::size_t __hw_threads)
-        {
-            return __is_small(__n, __hw_threads) ? __min_inputs_per_item : __max_inputs_per_item;
-        }
-    };
-
-    // Launch for __n elements in __m segments: work-items per band, elements per work-item within band bounds, and
-    // work-groups halved (down to one sub-group) until there are at least two per Xe core
+    // Launch for __n elements in __m segments, by the band of the average segment length: short segments spread over a
+    // piece per HW thread, long ones over twice as many work-groups as GPU cores, as in reduce-then-scan; elements per
+    // work-item within the bounds of the band, and work-groups halved (down to one sub-group) until there are at least
+    // two per GPU core
     static __segmented_reduce_flat_geometry
     __geometry(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
-    {
-        if (__n <= __m * __short_average_segment)
-            return __geometry_of<__short_segments>(__q, __n);
-
-        return __geometry_of<__long_segments>(__q, __n);
-    }
-
-    template <typename _Band>
-    static __segmented_reduce_flat_geometry
-    __geometry_of(const sycl::queue& __q, const std::size_t __n)
     {
         std::size_t __work_group_size =
             std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
@@ -413,10 +361,19 @@ struct __segmented_reduce_flat_tuning
         const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
         const std::size_t __min_groups = 2 * std::size_t{__compute_units.__num_xe_cores};
         const std::size_t __hw_threads = __segmented_reduce_hw_threads(__compute_units);
-        const std::size_t __items = _Band::__items(__hw_threads, __min_groups, __work_group_size);
-        const std::size_t __inputs_per_item =
-            std::clamp<std::size_t>(oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items),
-                                    _Band::__min_inputs(__n, __hw_threads), __max_inputs_per_item);
+        const bool __small = __n <= __small_inputs_per_thread * __hw_threads;
+
+        std::size_t __items = __min_groups * __work_group_size;
+        std::size_t __min_inputs = __small ? __min_inputs_per_item : __max_inputs_per_item;
+        if (__n <= __m * __short_average_segment)
+        {
+            __items = __hw_threads * __sub_group_size;
+            __min_inputs = __n <= __tiny_inputs_per_thread * __hw_threads ? __tiny_min_inputs_per_item
+                           : __small                                      ? __small_min_inputs_per_item
+                                                                          : __min_inputs_per_item;
+        }
+        const std::size_t __inputs_per_item = std::clamp<std::size_t>(
+            oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items), __min_inputs, __max_inputs_per_item);
 
         auto __groups = [__n, __inputs_per_item](std::size_t __size) {
             return oneapi::dpl::__internal::__dpl_ceiling_div(__n, __inputs_per_item * __size);
