@@ -320,8 +320,9 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __small_min_inputs_per_item = 8;
     static constexpr std::size_t __tiny_min_inputs_per_item = 4;
 
-    // Average segment length up to which walking a piece costs more than its loads: size pieces to fill HW threads
-    static constexpr std::size_t __short_average_segment = 2048;
+    // Average segment length up to which walking a piece costs more than its loads, the largest piece: size pieces to
+    // fill HW threads
+    static constexpr std::size_t __short_average_segment = __max_inputs_per_item * __sub_group_size;
 
     // Work-group size limit of both kernels, also of the work-group per segment path
     static constexpr std::size_t __work_group_size_limit = 256;
@@ -362,16 +363,17 @@ struct __segmented_reduce_flat_tuning
         const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
         const std::size_t __min_groups = 2 * std::size_t{__compute_units.__num_xe_cores};
         const std::size_t __hw_threads = __segmented_reduce_hw_threads(__compute_units);
-        const bool __small = __n <= __small_inputs_per_thread * __hw_threads;
 
+        // Long segments: an input that is not small has more than __max_inputs_per_item elements per work-item here
+        // (with at least 4 hardware threads per compute unit), so only the lower bound of small inputs matters
         std::size_t __items = __min_groups * __work_group_size;
-        std::size_t __min_inputs = __small ? __min_inputs_per_item : __max_inputs_per_item;
+        std::size_t __min_inputs = __min_inputs_per_item;
         if (__n <= __m * __short_average_segment)
         {
             __items = __hw_threads * __sub_group_size;
-            __min_inputs = __n <= __tiny_inputs_per_thread * __hw_threads ? __tiny_min_inputs_per_item
-                           : __small                                      ? __small_min_inputs_per_item
-                                                                          : __min_inputs_per_item;
+            __min_inputs = __n <= __tiny_inputs_per_thread * __hw_threads    ? __tiny_min_inputs_per_item
+                           : __n <= __small_inputs_per_thread * __hw_threads ? __small_min_inputs_per_item
+                                                                             : __min_inputs_per_item;
         }
         const std::size_t __inputs_per_item = std::clamp<std::size_t>(
             oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items), __min_inputs, __max_inputs_per_item);
@@ -742,7 +744,7 @@ struct __segmented_reduce_flat_submitter<
             {
                 const _T* const __p = __input.begin() + __base;
                 // Four elements a vector, two for 8-byte types, to stay within 16 bytes and be aligned as often
-                constexpr std::uint32_t __w = sizeof(_T) == 8 ? 2 : 4;
+                constexpr std::uint32_t __w = std::min<std::uint32_t>(4, 16 / sizeof(_T));
                 using _V = sycl::vec<_T, __w>;
                 constexpr std::uint32_t __vb = sizeof(_V);
                 const std::uint32_t __mis = std::uint32_t(reinterpret_cast<std::uintptr_t>(__p + __first) % __vb);
