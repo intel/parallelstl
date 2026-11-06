@@ -347,7 +347,8 @@ struct __segmented_reduce_flat_tuning
     // small inputs so more sub-groups share them
     struct __short_segments
     {
-        static constexpr std::size_t __tiny_input = std::size_t(1) << 18;
+        // An input is tiny up to this many elements per hardware thread of the device
+        static constexpr std::size_t __tiny_inputs_per_thread = 256;
         static constexpr std::size_t __tiny_min_inputs_per_item = 4;
         static constexpr std::size_t __small_min_inputs_per_item = 8;
 
@@ -361,9 +362,9 @@ struct __segmented_reduce_flat_tuning
         static std::size_t
         __min_inputs(const std::size_t __n, const std::size_t __hw_threads)
         {
-            return __n <= __tiny_input             ? __tiny_min_inputs_per_item
-                   : __is_small(__n, __hw_threads) ? __small_min_inputs_per_item
-                                                   : __min_inputs_per_item;
+            return __n <= __tiny_inputs_per_thread * __hw_threads ? __tiny_min_inputs_per_item
+                   : __is_small(__n, __hw_threads)                ? __small_min_inputs_per_item
+                                                                  : __min_inputs_per_item;
         }
     };
 
