@@ -223,15 +223,15 @@ struct __segmented_reduce_chunk_brick
         const _Size __chunk_begin = __k == 0 ? __begin : __begin + __head + (__k - 1) * __chunk_size;
         const _Size __chunk_end = __k == 0 ? __begin + __head : __chunk_begin + __chunk_size;
 
-        // Non-first chunks start from op(first two elements) as std::reduce does: an accumulator is never made from a
-        // lone element, which may mean something else to the operation (such a chunk has >= 64 elements)
-        _Acc __start = __k == 0
-                           ? __segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, __init, __input[__chunk_begin]))
-                           : __segmented_reduce_to_acc<_Acc>(
-                                 std::invoke(__binary_op, __input[__chunk_begin], __input[__chunk_begin + 1]));
+        // The first chunk starts from __init; non-first chunks start from op(first two elements) as std::reduce does:
+        // an accumulator is never made from a lone element, which may mean something else to the operation (such a
+        // chunk has >= 64 elements)
+        _Acc __start = __k == 0 ? __segmented_reduce_to_acc<_Acc>(__init)
+                                : __segmented_reduce_to_acc<_Acc>(
+                                      std::invoke(__binary_op, __input[__chunk_begin], __input[__chunk_begin + 1]));
 
         std::get<0>(__partials[__idx]) = oneapi::dpl::__internal::__segmented_reduce_serial<_Acc>(
-            __input, __chunk_begin + (__k == 0 ? 1 : 2), __chunk_end, std::move(__start), __binary_op);
+            __input, __chunk_begin + (__k == 0 ? 0 : 2), __chunk_end, std::move(__start), __binary_op);
     }
 };
 
