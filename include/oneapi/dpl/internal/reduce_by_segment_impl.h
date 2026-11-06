@@ -190,13 +190,13 @@ _Acc
 __segmented_reduce_host(_RandomAccessIterator __first, _Index __begin, _Index __end, _InitType __init,
                         _BinaryOperation& __binary_op, /*is_vector=*/std::true_type)
 {
+    // Unordered offsets may give __begin > __end, which the brick cannot take
     if (__begin >= __end)
         return std::move(__init);
 
     // An operation returning the accumulator type keeps the implicit conversion of its results and the operation itself
     return __internal::__brick_transform_reduce(
-        __first + __begin + 1, __first + __end,
-        __internal::__segmented_reduce_to_acc<_Acc>(std::invoke(__binary_op, std::move(__init), __first[__begin])),
+        __first + __begin, __first + __end, __internal::__segmented_reduce_to_acc<_Acc>(std::move(__init)),
         [&__binary_op](auto&& __x, auto&& __y) -> _Acc {
             return std::invoke(__binary_op, std::forward<decltype(__x)>(__x), std::forward<decltype(__y)>(__y));
         },
