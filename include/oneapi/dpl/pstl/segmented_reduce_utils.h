@@ -39,22 +39,19 @@ __segmented_reduce_to_acc(_Value&& __value)
     return std::forward<_Value>(__value);
 }
 
-// Reduces the elements [__begin, __end) of a random access iterator or a range as std::ranges::fold_left does: the
-// initial value itself is the first operand of the first operation, so that it takes part in the result as one of its
-// operands; an empty range gives the initial value converted to the accumulator type
+// Reduces the elements [__begin, __end) of a random access iterator or a range into an accumulator made from the
+// initial value; an empty range gives the initial value converted to the accumulator type
 template <typename _Acc, typename _Source, typename _Index, typename _InitType, typename _BinaryOperation>
 _Acc
 __segmented_reduce_serial(const _Source& __src, _Index __begin, _Index __end, _InitType __init,
                           _BinaryOperation& __binary_op)
 {
-    if (__begin >= __end)
-        return std::move(__init);
-    _Acc __acc = std::invoke(__binary_op, std::move(__init), __src[__begin]);
+    _Acc __acc = __segmented_reduce_to_acc<_Acc>(std::move(__init));
     // Unrolled on a device, where a work-item reducing alone would wait for every load
 #if defined(__SYCL_DEVICE_ONLY__)
     _ONEDPL_PRAGMA(unroll 16)
 #endif
-    for (++__begin; __begin < __end; ++__begin)
+    for (; __begin < __end; ++__begin)
         __acc = std::invoke(__binary_op, std::move(__acc), __src[__begin]);
     return __acc;
 }
