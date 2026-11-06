@@ -15,7 +15,7 @@
 #include <cmath>       // std::sqrt
 #include <cstddef>     // std::size_t
 #include <cstdint>     // std::uint8_t, std::uint32_t, std::uint64_t, std::uintptr_t
-#include <functional>  // std::invoke, std::plus
+#include <functional>  // std::invoke, std::less, std::plus
 #include <limits>      // std::numeric_limits
 #include <type_traits> // std::integral_constant, std::conditional_t, std::enable_if_t, std::is_*_v, ...
 #include <utility>     // std::move, std::forward, std::declval, std::pair
@@ -25,7 +25,7 @@
 #include "unseq_backend_sycl.h"
 #include "utils_ranges_sycl.h"
 
-#include "../../functional_impl.h" // oneapi::dpl::maximum
+#include "../../functional_impl.h" // oneapi::dpl::identity, oneapi::dpl::maximum
 #include "../../segmented_reduce_utils.h"
 #include "../../utils.h"
 
@@ -175,8 +175,9 @@ struct __segmented_reduce_chunk_count
     }
 };
 
-// Reduces one chunk of a long segment: the first takes the remainder and starts from op(init, first element);
-// others have exactly __chunk_size elements and start from op(first two elements)
+// Reduces one chunk of a long segment. The first chunk of a segment takes the remainder of its length and starts
+// from the initial value converted to the accumulator type; every other chunk has exactly __chunk_size elements and
+// starts from the operation on its first two elements.
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
 struct __segmented_reduce_chunk_brick
 {
@@ -201,10 +202,10 @@ struct __segmented_reduce_chunk_brick
         if (__chunk >= __chunk_ends[__num_segments - 1])
             return;
 
-        // Segment of the chunk: the first whose chunks end after it
-        const _Size __lo = oneapi::dpl::__internal::__pstl_lower_bound_impl(
-            _Size{0}, __num_segments - 1, [&](const _Size __i) { return __chunk_ends[__i] <= __chunk; });
-
+        // The segment of the chunk: the first one whose chunks end after it, the last one if no other does
+        const _Size __lo = oneapi::dpl::__internal::__pstl_upper_bound(
+            __chunk_ends, _Size{0}, __num_segments - 1, &__chunk, std::less<>{}, oneapi::dpl::identity{},
+            oneapi::dpl::identity{});
         const _Size __first_chunk = __lo == 0 ? _Size{0} : _Size(__chunk_ends[__lo - 1]);
         const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo], __n);
         const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo + 1], __n);
