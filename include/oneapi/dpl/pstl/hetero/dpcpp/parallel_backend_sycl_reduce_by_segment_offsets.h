@@ -344,12 +344,6 @@ struct __segmented_reduce_flat_tuning
     // waiting for the slowest sub-group, which many work-groups hide
     static constexpr std::size_t __group_combine_input = std::size_t(1) << 24;
 
-    static bool
-    __combines_in_group(const std::size_t __n)
-    {
-        return __n > __group_combine_input;
-    }
-
     // Interpolation refines the piece guess only with more segments than pieces; otherwise a step just adds a load
     static int
     __interpolation_steps(const std::size_t __m, const std::size_t __pieces)
@@ -492,7 +486,7 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __piece_size = __ipi * __sub_group_size;
 
         // Second-kernel units: work-groups when pieces are combined in local memory, else pieces
-        const bool __in_group = _Tuning::__combines_in_group(std::size_t(__n));
+        const bool __in_group = std::size_t(__n) > _Tuning::__group_combine_input;
         const std::uint32_t __num_units = __in_group ? __num_groups : __num_groups * __sub_groups;
         const std::uint32_t __unit_size = __in_group ? __piece_size * __sub_groups : __piece_size;
 
@@ -702,13 +696,6 @@ struct __segmented_reduce_flat_submitter<
         return oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__s], __n);
     }
 
-    template <typename _OffsetRange, typename _Size>
-    static _Size
-    __segment_end(const _OffsetRange __offsets, const _Size __s, const _Size __n)
-    {
-        return oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__s + 1], __n);
-    }
-
     // A very short segment held whole by the piece
     template <typename _Size>
     static bool
@@ -739,9 +726,8 @@ struct __segmented_reduce_flat_submitter<
         const std::uint32_t __lane = __sg.get_local_linear_id();
         const std::uint32_t __sub_group_size = __sg.get_local_linear_range();
 
-        // Accumulators start from their first values; an idle lane holds the init, which is passed but never used
-
-        // Each active lane gets >= 2 elements: an accumulator never comes from a lone element (may differ to the op)
+        // Accumulators start from their first values, at least two for each active lane: an accumulator never comes
+        // from a lone element (may differ to the op); an idle lane holds the init, which is passed but never used
         std::uint32_t __active = std::min<std::uint32_t>(__sub_group_size, (__last - __first) / 2);
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __acc;
 
@@ -842,7 +828,7 @@ struct __segmented_reduce_flat_submitter<
         if (__mine < __m)
         {
             __mb = __segment_begin(__offsets, __mine, __n);
-            __me = __segment_end(__offsets, __mine, __n);
+            __me = __segment_begin(__offsets, __mine + 1, __n);
             __run = __is_tiny(__mb, __me, __piece_begin, __piece_end);
         }
         // Run length: the first lane not in the run, or the sub-group size if all are
@@ -939,7 +925,7 @@ struct __segmented_reduce_flat_submitter<
             if (__b >= __piece_end && !__last_piece)
                 break;
 
-            const _Size __e = __segment_end(__offsets, __s, __n);
+            const _Size __e = __segment_begin(__offsets, __s + 1, __n);
             if (__is_tiny(__b, __e, __piece_begin, __piece_end))
             {
                 const auto [__count, __run_end] = __reduce_tiny_run(__sg, __input, __offsets, __result, __n, __m, __s,
@@ -1056,7 +1042,7 @@ struct __segmented_reduce_flat_submitter<
         // Tail loaded with its segment end so neither waits for the other
         // Tails follow the heads in the storage
         const _Acc __tail = (__heads + __num_units)[__unit];
-        const _Size __e = __segment_end(__offsets, __s, __n);
+        const _Size __e = __segment_begin(__offsets, __s + 1, __n);
         // Units after this one up to the one holding the segment's last element
         const std::uint32_t __heads_count = std::uint32_t(std::size_t(__e - 1) / __unit_size) - __unit;
         if (__heads_count == 0 && __lane == 0)
