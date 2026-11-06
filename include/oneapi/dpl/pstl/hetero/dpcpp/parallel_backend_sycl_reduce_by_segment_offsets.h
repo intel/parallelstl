@@ -1174,13 +1174,17 @@ struct __segmented_reduce_group_tuning
         return __n <= __max_input_beyond && __m <= __max_input_beyond;
     }
 
-    // Power-of-two sub-groups, about the average segment length in work-items, within the bounds
+    // Power-of-two sub-groups, about the average segment length in work-items, within the bounds; beyond small inputs
+    // the largest, as a segment may then be much longer than the average
     static std::size_t
     __work_group_size(const sycl::queue& __q, const std::size_t __n, const std::size_t __m)
     {
         const std::size_t __max_size =
             std::max(__sub_group_size, oneapi::dpl::__internal::__max_work_group_size(__q, __work_group_size_limit) /
                                            __sub_group_size * __sub_group_size);
+        if (__n > __max_input)
+            return __max_size;
+
         const std::size_t __average = oneapi::dpl::__internal::__dpl_ceiling_div(__n, __m);
 
         std::size_t __size = __sub_group_size;
