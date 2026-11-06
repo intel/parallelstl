@@ -1117,12 +1117,7 @@ struct __segmented_reduce_group_tuning
             return __max_size;
 
         const std::size_t __average = oneapi::dpl::__internal::__dpl_ceiling_div(__n, __m);
-
-        std::size_t __size = __sub_group_size;
-        while (__size < __average && __size < __max_size)
-            __size *= 2;
-
-        return std::min(__size, __max_size);
+        return std::min(__max_size, std::max(__sub_group_size, oneapi::dpl::__internal::__dpl_bit_ceil(__average)));
     }
 };
 
