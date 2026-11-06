@@ -46,6 +46,14 @@ __segmented_reduce_to_acc(_Value&& __value)
     return std::forward<_Value>(__value);
 }
 
+// Offset __i clamped to the input: the beginning of segment __i and the end of segment __i - 1
+template <typename _OffsetRange, typename _Index, typename _Size>
+_Size
+__segmented_reduce_offset(const _OffsetRange& __offsets, const _Index __i, const _Size __n)
+{
+    return oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__i], __n);
+}
+
 // One work-item per short segment; a long one only reports its length via atomic max, capped to 32 bits: the chunk
 // length takes only its square root and clamps it far below
 template <typename _Acc, typename _Size, typename _InitType, typename _BinaryOperation>
@@ -67,8 +75,8 @@ struct __segmented_reduce_variable_brick
         static_assert(_Params::__vector_size == 1,
                       "The brick operates with tuples which must be excluded from vectorizable types");
 
-        const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx], __n);
-        const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__idx + 1], __n);
+        const _Size __begin = __segmented_reduce_offset(__offsets, __idx, __n);
+        const _Size __end = __segmented_reduce_offset(__offsets, __idx + 1, __n);
 
         // A reversed segment has a negative length, so it is short and its serial reduce gives the init
         static_assert(std::is_signed_v<_Size>, "The size type must be signed");
@@ -207,8 +215,8 @@ struct __segmented_reduce_chunk_brick
             __chunk_ends, _Size{0}, __num_segments - 1, &__chunk, std::less<>{}, oneapi::dpl::identity{},
             oneapi::dpl::identity{});
         const _Size __first_chunk = __lo == 0 ? _Size{0} : _Size(__chunk_ends[__lo - 1]);
-        const _Size __begin = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo], __n);
-        const _Size __end = oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__lo + 1], __n);
+        const _Size __begin = __segmented_reduce_offset(__offsets, __lo, __n);
+        const _Size __end = __segmented_reduce_offset(__offsets, __lo + 1, __n);
 
         // First chunk length: the remainder after the full chunks, in [1, __chunk_size]
         const _Size __head = (__end - __begin) - (_Size(__chunk_ends[__lo]) - __first_chunk - 1) * __chunk_size;
@@ -629,12 +637,12 @@ struct __segmented_reduce_flat_submitter<
     __last_begin(const _OffsetRange __offsets, const _Size __m, const _Size __n, const _Size __v, _Size __guess,
                  const __segment_estimate __estimate, const int __steps)
     {
-        auto __begins_after = [&](_Size __i) { return __segment_begin(__offsets, __i, __n) > __v; };
+        auto __begins_after = [&](_Size __i) { return __segmented_reduce_offset(__offsets, __i, __n) > __v; };
 
         // Move the guess by the segments to __v assuming equal lengths nearby, within [0, __m - 1]; distance <= n + 1
         for (int __step = 0; __step < __steps; ++__step)
         {
-            const _Size __at = __segment_begin(__offsets, __guess, __n);
+            const _Size __at = __segmented_reduce_offset(__offsets, __guess, __n);
             const std::uint64_t __g = __guess;
             const _Size __next = _Size(__v >= __at ? std::min<std::uint64_t>(__g + __estimate(__v - __at), __m - 1)
                                                    : __g - std::min<std::uint64_t>(__g, __estimate(__at - __v)));
@@ -692,13 +700,6 @@ struct __segmented_reduce_flat_submitter<
         std::uint8_t __head_state = 0;
         oneapi::dpl::__internal::__lazy_ctor_storage<_Acc> __head, __tail;
     };
-
-    template <typename _OffsetRange, typename _Size>
-    static _Size
-    __segment_begin(const _OffsetRange __offsets, const _Size __s, const _Size __n)
-    {
-        return oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__s], __n);
-    }
 
     // A very short segment held whole by the piece
     template <typename _Size>
@@ -818,8 +819,8 @@ struct __segmented_reduce_flat_submitter<
         bool __run = false;
         if (__mine < __m)
         {
-            __mb = __segment_begin(__offsets, __mine, __n);
-            __me = __segment_begin(__offsets, __mine + 1, __n);
+            __mb = __segmented_reduce_offset(__offsets, __mine, __n);
+            __me = __segmented_reduce_offset(__offsets, __mine + 1, __n);
             __run = __is_tiny(__mb, __me, __piece_begin, __piece_end);
         }
         // Run length: the first lane not in the run, or the sub-group size if all are
@@ -904,11 +905,11 @@ struct __segmented_reduce_flat_submitter<
 
         for (; __s < __m; ++__s)
         {
-            const _Size __b = __segment_begin(__offsets, __s, __n);
+            const _Size __b = __segmented_reduce_offset(__offsets, __s, __n);
             if (__b >= __piece_end && !__last_piece)
                 break;
 
-            const _Size __e = __segment_begin(__offsets, __s + 1, __n);
+            const _Size __e = __segmented_reduce_offset(__offsets, __s + 1, __n);
             if (__is_tiny(__b, __e, __piece_begin, __piece_end))
             {
                 const auto [__count, __run_end] = __reduce_tiny_run(__sg, __input, __offsets, __result, __n, __m, __s,
@@ -1024,7 +1025,7 @@ struct __segmented_reduce_flat_submitter<
         // Tail loaded with its segment end so neither waits for the other
         // Tails follow the heads in the storage
         const _Acc __tail = (__heads + __num_units)[__unit];
-        const _Size __e = __segment_begin(__offsets, __s + 1, __n);
+        const _Size __e = __segmented_reduce_offset(__offsets, __s + 1, __n);
         // Units after this one up to the one holding the segment's last element
         const std::uint32_t __heads_count = std::uint32_t(std::size_t(__e - 1) / __unit_size) - __unit;
         if (__heads_count == 0 && __lane == 0)
@@ -1131,10 +1132,8 @@ struct __segmented_reduce_group_submitter<_Acc, __internal::__optional_kernel_na
                 [=, *this](sycl::nd_item<1> __item) [[_ONEDPL_SYCL_REQD_SUB_GROUP_SIZE(__sub_group_size)]] {
                     const std::uint32_t __segment = __item.get_group(0);
                     const std::uint32_t __lid = __item.get_local_id(0);
-                    const _Size __begin =
-                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__segment], __n);
-                    const _Size __end =
-                        oneapi::dpl::__internal::__segmented_reduce_clamp_offset(__offsets[__segment + 1], __n);
+                    const _Size __begin = __segmented_reduce_offset(__offsets, __segment, __n);
+                    const _Size __end = __segmented_reduce_offset(__offsets, __segment + 1, __n);
 
                     // Uniform across the work-group, so it leaves before any barrier
                     if (__begin >= __end)
