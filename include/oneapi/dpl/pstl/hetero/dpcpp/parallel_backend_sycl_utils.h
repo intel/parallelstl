@@ -106,14 +106,23 @@ __max_compute_units(const sycl::queue& __q)
 struct __device_compute_units
 {
     static constexpr std::uint32_t __compute_units_per_gpu_core = 8;
+    // Hardware threads per compute unit of a non-GPU device and of a GPU that does not report them
+    static constexpr std::uint32_t __default_threads_per_compute_unit = 8;
 
     std::uint32_t __max_compute_units = 0;
     std::uint32_t __num_xe_cores = 0;
+    std::uint32_t __threads_per_compute_unit = __default_threads_per_compute_unit;
 
     explicit __device_compute_units(const sycl::queue& __q)
         : __max_compute_units(oneapi::dpl::__internal::__max_compute_units(__q)),
           __num_xe_cores(std::max(1u, __max_compute_units / __compute_units_per_gpu_core))
     {
+#if defined(SYCL_EXT_INTEL_DEVICE_INFO)
+        const sycl::device __device = __q.get_device();
+        if (__device.is_gpu() && __device.has(sycl::aspect::ext_intel_gpu_hw_threads_per_eu))
+            __threads_per_compute_unit =
+                std::max(1u, std::uint32_t(__device.get_info<sycl::ext::intel::info::device::gpu_hw_threads_per_eu>()));
+#endif
     }
 };
 

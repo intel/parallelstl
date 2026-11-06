@@ -312,9 +312,6 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __work_group_size_limit = 256;
     static constexpr std::size_t __tail_work_group_size = 256;
 
-    // Compute unit: 8 hardware threads, a sub-group per thread
-    static constexpr std::size_t __threads_per_compute_unit = 8;
-
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
 
@@ -347,10 +344,10 @@ struct __segmented_reduce_flat_tuning
         static constexpr std::size_t __small_min_inputs_per_item = 8;
 
         static std::size_t
-        __items(const std::size_t __compute_units, const std::size_t /*__min_groups*/,
+        __items(const std::size_t __hw_threads, const std::size_t /*__min_groups*/,
                 const std::size_t /*__work_group_size*/)
         {
-            return __threads_per_compute_unit * std::max<std::size_t>(1, __compute_units) * __sub_group_size;
+            return std::max<std::size_t>(1, __hw_threads) * __sub_group_size;
         }
 
         static std::size_t
@@ -366,7 +363,7 @@ struct __segmented_reduce_flat_tuning
     struct __long_segments
     {
         static std::size_t
-        __items(const std::size_t /*__compute_units*/, const std::size_t __min_groups,
+        __items(const std::size_t /*__hw_threads*/, const std::size_t __min_groups,
                 const std::size_t __work_group_size)
         {
             return __min_groups * __work_group_size;
@@ -399,8 +396,9 @@ struct __segmented_reduce_flat_tuning
                                            __sub_group_size * __sub_group_size);
         const oneapi::dpl::__internal::__device_compute_units __compute_units(__q);
         const std::size_t __min_groups = 2 * std::size_t{__compute_units.__num_xe_cores};
-        const std::size_t __items =
-            _Band::__items(__compute_units.__max_compute_units, __min_groups, __work_group_size);
+        const std::size_t __hw_threads =
+            std::size_t{__compute_units.__max_compute_units} * __compute_units.__threads_per_compute_unit;
+        const std::size_t __items = _Band::__items(__hw_threads, __min_groups, __work_group_size);
         const std::size_t __inputs_per_item = std::clamp<std::size_t>(
             oneapi::dpl::__internal::__dpl_ceiling_div(__n, __items), _Band::__min_inputs(__n), __max_inputs_per_item);
 
