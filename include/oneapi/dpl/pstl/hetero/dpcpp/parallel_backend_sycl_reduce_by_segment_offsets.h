@@ -318,7 +318,7 @@ struct __segmented_reduce_flat_tuning
     static constexpr std::size_t __short_average_segment = 2048;
 
     static constexpr std::size_t __work_group_size_limit = 256;
-    static constexpr std::size_t __tail_work_group_size = 256;
+    static constexpr std::size_t __tail_work_group_size_limit = 256;
 
     // Whole segments up to this length are reduced one per lane: cheaper than sub-group combining and serial walking
     static constexpr std::size_t __tiny_segment = 32;
@@ -594,8 +594,12 @@ struct __segmented_reduce_flat_submitter<
         // Each unit's tail with the following heads its segment covers, a sub-group per unit; none for a single unit
         if (__num_units > 1)
         {
-            constexpr std::size_t __tail_work_group_size = _Tuning::__tail_work_group_size;
-            constexpr std::size_t __tail_sub_groups = __tail_work_group_size / __sub_group_size;
+            // Whole sub-groups within the device limit
+            const std::size_t __tail_work_group_size =
+                std::max(__sub_group_size,
+                         oneapi::dpl::__internal::__max_work_group_size(__q, _Tuning::__tail_work_group_size_limit) /
+                             __sub_group_size * __sub_group_size);
+            const std::uint32_t __tail_sub_groups = __tail_work_group_size / __sub_group_size;
             const std::size_t __tail_groups =
                 oneapi::dpl::__internal::__dpl_ceiling_div(__num_units, __tail_sub_groups);
 
