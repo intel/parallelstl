@@ -1099,6 +1099,49 @@ struct __early_exit_find_or
         return std::array<std::decay_t<decltype(__rng[__base])>, sizeof...(__j)>{__rng[__base + __j]...};
     }
 
+    // The pair adjacent_find passes: one range as take_view_simple(__r, __n - 1) and drop_view_simple(__r, 1).
+    template <typename _Range1, typename _Range2>
+    struct __is_take_drop_pair : std::false_type
+    {
+    };
+    template <typename _R, typename _Size1, typename _Size2>
+    struct __is_take_drop_pair<oneapi::dpl::__ranges::take_view_simple<_R, _Size1>,
+                               oneapi::dpl::__ranges::drop_view_simple<_R, _Size2>>
+        : std::is_lvalue_reference<decltype(std::declval<const _R&>()[0])>
+    {
+    };
+
+    template <typename... _Ranges>
+    static constexpr bool
+    __may_be_offset_pair()
+    {
+        if constexpr (sizeof...(_Ranges) == 2)
+            return __is_take_drop_pair<std::decay_t<_Ranges>...>::value;
+        else
+            return false;
+    }
+
+    // Confirms the views share one underlying range, __rng2 starting one element after __rng1.
+    template <typename _Range1, typename _Range2>
+    static bool
+    __is_offset_pair(const _Range1& __rng1, const _Range2& __rng2)
+    {
+        return __rng2.__n == 1 && std::addressof(__rng1[1]) == std::addressof(__rng2[0]);
+    }
+
+    // With __rng2[__i] being __rng1[__i + 1], loads __rng1's block and the last element of __rng2's, and builds
+    // both blocks from those registers.
+    template <typename _Range1, typename _Range2, std::size_t... __j>
+    static auto
+    __load_offset_pair(const _Range1& __rng1, const _Range2& __rng2, std::size_t __base, std::index_sequence<__j...>)
+    {
+        constexpr std::size_t __n = sizeof...(__j);
+        const auto __lo = __load_elems(__rng1, __base, std::index_sequence<__j...>{});
+        const auto __last = __rng2[__base + __n - 1];
+        auto __at = [&](std::size_t __k) { return __k < __n ? __lo[__k] : __last; };
+        return std::make_tuple(__lo, decltype(__lo){__at(__j + 1)...});
+    }
+
     template <typename _NDItemId, typename _LocalFoundState, typename _BrickTag, typename... _Ranges>
     void
     operator()(const _NDItemId __item, const std::size_t __source_data_size, const std::size_t __iters_per_work_item,
@@ -1137,6 +1180,10 @@ struct __early_exit_find_or
         {
             const std::size_t __iters =
                 oneapi::dpl::__internal::__dpl_ceiling_div(__iters_per_work_item, __elems_per_iter);
+            constexpr bool __may_fuse = __may_be_offset_pair<_Ranges...>();
+            bool __offset_pair = false;
+            if constexpr (__may_fuse)
+                __offset_pair = __source_data_size > 1 && __is_offset_pair(__rngs...);
             const std::size_t __stride = __iteration_data_size * __elems_per_iter;
 
             // Lowest source index of the __elems_per_iter consecutive elements this item scans on
@@ -1170,13 +1217,18 @@ struct __early_exit_find_or
                 _BrickTag::__save_state_to(__found_local, __base + __j);
                 return true;
             };
-            auto __scan_iter = [&](std::size_t __i) {
+            auto __scan_iter = [&](auto __offset_pair_c, std::size_t __i) {
                 const std::size_t __base = __iter_base(__i);
                 std::uint32_t __hits = 0;
                 // Each range is read before any predicate runs: interleaved reads of several ranges do not merge.
                 // The brick then reads its elements from the registers, at local index __j.
-                const auto __vals =
-                    std::make_tuple(__load_elems(__rngs, __base, std::make_index_sequence<__elems_per_iter>{})...);
+                const auto __vals = [&]() {
+                    constexpr auto __seq = std::make_index_sequence<__elems_per_iter>{};
+                    if constexpr (decltype(__offset_pair_c)::value)
+                        return __load_offset_pair(__rngs..., __base, __seq);
+                    else
+                        return std::make_tuple(__load_elems(__rngs, __base, __seq)...);
+                }();
                 std::apply(
                     [&](const auto&... __v) {
                         _ONEDPL_PRAGMA_UNROLL
@@ -1212,9 +1264,20 @@ struct __early_exit_find_or
                     if (__iter_base(__backward ? __iter : __iter + __len - 1) + __elems_per_iter - 1 <
                         __source_data_size)
                     {
-                        _ONEDPL_PRAGMA_UNROLL
-                        for (std::size_t __j = 0; __j < __len; ++__j)
-                            __something_was_found |= __scan_iter(__iter + __j);
+                        auto __scan_unrolled = [&](auto __offset_pair_c) {
+                            _ONEDPL_PRAGMA_UNROLL
+                            for (std::size_t __j = 0; __j < __len; ++__j)
+                                __something_was_found |= __scan_iter(__offset_pair_c, __iter + __j);
+                        };
+                        if constexpr (__may_fuse)
+                        {
+                            if (__offset_pair)
+                                __scan_unrolled(std::true_type{});
+                            else
+                                __scan_unrolled(std::false_type{});
+                        }
+                        else
+                            __scan_unrolled(std::false_type{});
                     }
                     else
                     {
